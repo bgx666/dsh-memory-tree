@@ -1,10 +1,8 @@
 /**
  * Message and node text helpers.
  *
- * Everything here mirrors planner's `content_text` / `_anchor_quotes` /
- * `_render_node_text`: the same flattening, the same head/tail anchors, the same
- * node line layout, so a node rendered here reads exactly like one rendered
- * there.
+ * Shared text helpers: flatten message content, build head/tail anchors, and
+ * render the labelled node-line layout used in checkpoints.
  *
  * @module @xiaob/dsh-memory-tree/text
  */
@@ -35,7 +33,7 @@ export function imageCount(content) {
 }
 
 /**
- * planner's token estimate: text characters x 1.2, plus 384 per image.
+ * Rough token estimate: text characters x 1.2, plus 384 per image.
  * Base64 data URLs must never be counted as characters — one 1 MB image is a
  * million "characters" and fires compaction on a nearly empty buffer.
  * @param {object} message request message.
@@ -73,8 +71,8 @@ export function toolCallNames(message) {
 /**
  * Head/tail anchors that name a chunk's range without quoting it.
  *
- * planner splices the whole chunk into the prompt; here the chunk travels as
- * real messages, so the instruction only needs to point at its edges. The head
+ * The chunk travels as real messages, so the instruction only needs to point at
+ * its edges. The head
  * is the first body text (skipping empty assistant tool-call turns, up to four
  * messages), the tail is the last body text's ending (up to four back) — without
  * which a model reads the final tool result as background and stops early.
@@ -116,7 +114,7 @@ export function formatTimeRange(start, end) {
 }
 
 /**
- * One node as planner renders it into the conversation.
+ * One node as rendered into the conversation.
  *
  *   [node0_003 · L0 · 第13-18条] [已压缩 · 不需要压缩]
  *   [摘要] …
@@ -196,8 +194,8 @@ export const DIGEST_MARK = '[记忆树]'
  * Render the checkpoint: a header plus one block per active root node.
  *
  * DSH checkpoints are a single user message, so nodes become content blocks
- * rather than messages. That is the only structural departure from planner, and
- * it keeps every node individually addressable — which is the whole point.
+ * rather than messages. That keeps every node individually addressable — which
+ * is the whole point.
  * @param {object} input header inputs.
  * @param {readonly object[]} input.roots active nodes, oldest first.
  * @param {{active: number, depth: number, covered: number}} input.stats tree statistics.

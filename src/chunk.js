@@ -1,5 +1,5 @@
 /**
- * Chunk splitting, ported from planner's `_split_batch_by_tokens`.
+ * Token-aware chunk splitting.
  *
  * The chunker exists to serve the progressive-prefix call pattern: chunk k is
  * sent together with chunks 1..k-1, so the provider's cached prefix covers

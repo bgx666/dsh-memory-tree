@@ -1,10 +1,9 @@
 /**
- * Compression prompt templates, copied verbatim from planner's
- * `src/planner/prompts/compress/` so the two trees stay diffable.
+ * Compression prompt templates shipped with the plugin.
  *
- * planner renders with `prompt_loader.render`, which raises when a template
- * references a placeholder the caller did not supply; that strictness is what
- * keeps a missing budget line from silently shipping to the model.
+ * Rendering raises when a template references a placeholder the caller did not
+ * supply; that strictness keeps a missing budget line from silently shipping to
+ * the model.
  *
  * @module @xiaob/dsh-memory-tree/prompts
  */

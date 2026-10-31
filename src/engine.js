@@ -2,8 +2,7 @@
  * The compaction pipeline: raw conversation -> level-0 nodes -> merged parents
  * -> the node blocks that become the checkpoint.
  *
- * This is a port of planner's `SummarizationMiddleware`, not of its storage
- * class. The parts that matter, in the order the run does them:
+ * The parts that matter, in the order the run does them:
  *
  *   1. split the batch into ~30k-token chunks, cutting on turn boundaries;
  *   2. chunk k is sent with chunks 1..k-1 in front of it (progressive prefix),
@@ -24,7 +23,7 @@ import { load, render } from './prompts.js'
 import { applyBudget, coerceFields, emptyFields, NODE_MARKER, SCHEMA_VERSION } from './schema.js'
 import { anchorQuotes, isCheckpoint, nodeText, renderNodeBlocks } from './text.js'
 
-/** Whole-node character budget, split the way planner splits it: 40% / 60%. */
+/** Whole-node character budget split: 40% summary / 60% fields. */
 export function nodeBudget(limits, language = 'zh') {
   const budget = Math.max(200, Math.trunc(Number(limits.nodeBudget) || 1000))
   const chars = language === 'en' ? Math.trunc(budget * 3.5) : budget
@@ -111,7 +110,7 @@ function textMessage(role, text) {
  *
  * A truncated or unparseable answer gets one retry that says so and asks for a
  * shorter, closed JSON — resending the identical request reproduces the identical
- * cut-off, which planner learned the expensive way.
+ * cut-off, so one retry is enough to change the outcome.
  * @returns {Promise<{summary: string, fields: object, raw: string}>} normalized node.
  */
 async function requestNode({ complete, messages, limits, language, signal }) {
@@ -337,8 +336,8 @@ function timeRangeOf(chunk, times) {
 
 /**
  * Land a node without a model: keep the opening of the chunk as the summary.
- * planner does the same (`_mechanical_excerpt`): a poor summary beats dropping
- * the messages from the context entirely, and a later merge can still digest it.
+ * A poor summary beats dropping the messages from the context entirely, and a
+ * later merge can still digest it.
  * @param {readonly object[]} chunk the messages that could not be summarized.
  * @returns {{summary: string, fields: object}} node content.
  */

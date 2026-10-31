@@ -1,11 +1,9 @@
 /**
  * The compression model call.
  *
- * planner cannot use its chat path for compression: it needs a JSON answer, a
- * fixed output budget, and thinking disabled, so it builds a separate model
- * instance. Here the equivalent is a direct `ctx.llm.stream` call — the same
- * seam `compaction-basic` uses, minus its fixed instruction, which is the whole
- * point of replacing the summarizer.
+ * Compression needs a JSON answer, a fixed output budget, and thinking disabled.
+ * A direct `ctx.llm.stream` call is the same seam `compaction-basic` uses, minus
+ * its fixed instruction, which is the whole point of replacing the summarizer.
  *
  * @module @xiaob/dsh-memory-tree/llm
  */
@@ -74,9 +72,9 @@ export function createCompleter({ ctx, route, sessionId, purpose = 'compaction' 
 /**
  * Parse a JSON answer that may be wrapped in a markdown fence or chatty prose.
  *
- * planner carries the same three steps (structured output, then `json.loads`,
- * then pull the `summary` string out of whatever came back); the middle step is
- * the one that actually fires on most providers.
+ * Recovery has three steps: strict JSON, then a markdown-fence/loose parse, then
+ * pulling the `summary` string out of whatever came back. The loose parse is the
+ * one that actually fires on most providers.
  * @param {string} text raw model output.
  * @returns {object} parsed JSON object.
  * @throws {CompressError} when no object can be recovered.

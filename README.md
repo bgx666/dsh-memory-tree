@@ -1,11 +1,9 @@
-# @xiaob/dsh-memory-tree
+# DSH Memory Tree
 
-把 DeepSeek Harness 的「压缩成一段摘要」换成 **planner 的分层记忆树**。
+把 DeepSeek Harness 的「压缩成一段摘要」换成分层记忆树。
 
-移植对象是 `D:\xiaob\planner`（`src/planner/middleware.py` 的
-`SummarizationMiddleware` + `src/planner/prompts/compress/`），**不是**
-`D:\xiaob\src\xiaob\memory\sqlite_memory_tree.py` —— 那是 xiaob 游戏里的旧拷贝，
-它把整片原文内联进指令、按条数触发、节点无预算，和现在的 planner 不是一回事。
+压缩后的上下文由节点消息组成；节点攒够 8 个就合并成父节点，父节点再攒够再往上，
+`explore_memory_tree(node_id)` 可以逐层下钻到原始消息。
 
 ## 安装
 
@@ -37,34 +35,31 @@ github:bgx666/dsh-memory-tree
 所以模型看到的上下文**本身就是这棵树**。节点攒够 8 个就把最早的 4 个合并成父节点，
 父节点再攒够再往上，`explore_memory_tree(node_id)` 可以逐层下钻到原文。
 
-## 一次压缩做什么（与 planner 逐项对应）
+## 一次压缩做什么
 
-| 步骤 | planner | 这里 |
-|---|---|---|
-| 何时压 | `compress_token_budget`（10 万 token） | 归框架的 `thresholdRatio`/`retainRatio` 决定；插件只拿到"要压这一段" |
-| 分片 | `_split_batch_by_tokens`：3 万 token/片、最多 12 片、优先用户消息边界、浮动 0.75×~1.4×、不切开 tool 配对 | `src/chunk.js`，同一套规则 |
-| 渐进前缀 | 第 k 次调用带「第 1..k 片原文」 | `src/engine.js`：`chunks.slice(0, k+1)` |
-| 指令定位 | 头锚点=首条正文前 120 字、尾锚点=末条正文结尾 60 字 | `anchorQuotes()`，同上 |
-| 输入组装 | system(角色卡) + 带标记的已有节点 + 待压原文 + 指令 | 同一结构；system 是对话自身的 system 头 |
-| 输出 | `MemoryNodeOutput` JSON：summary/narration/task/decisions/lessons/context/user | `src/schema.js` 归一化 |
-| 预算 | `node_token_budget`=1000 字，summary 占 40%；`_apply_budget` 硬兜底 | `applyBudget()`，同一套牺牲顺序 |
-| 落树 | `add_leaf(summary, range, details=原文, meta.fields)` | `store.addLeaf`，同一形状 |
-| 向上合并 | 阈值 8、每次取最早 4 个、一轮持续合并到低于阈值（最多 8 批） | `engine.mergeUp`，同上 |
-| 合并输入 | 只放节点消息；目标去标记；目标之后的节点（未来信息）不进 | 同上 |
+| 步骤 | 做法 |
+|---|---|
+| 何时压 | 框架按 `thresholdRatio`/`retainRatio` 决定；插件只拿到“要压这一段” |
+| 分片 | 3 万 token/片、最多 12 片、优先用户消息边界、浮动 0.75×~1.4×、不切开 tool 配对 |
+| 渐进前缀 | 第 k 次调用带「第 1..k 片原文」：`src/engine.js` 的 `chunks.slice(0, k+1)` |
+| 指令定位 | 头锚点=首条正文前 120 字、尾锚点=末条正文结尾 60 字 |
+| 输入组装 | system（对话自身的 system 头）+ 带标记的已有节点 + 待压原文 + 指令 |
+| 输出 | JSON：summary/narration/task/decisions/lessons/context/user，`src/schema.js` 归一化 |
+| 预算 | `nodeBudget` 默认 1000 字，summary 占 40%，超了按固定牺牲顺序硬裁 |
+| 落树 | `store.addLeaf`：summary、消息范围、原文 details、结构化字段 |
+| 向上合并 | 阈值 8、每次取最早 4 个、一轮持续合并到低于阈值（最多 8 批） |
+| 合并输入 | 只放节点消息；目标去标记；目标之后的节点（未来信息）不进 |
 
 ## 提示词
 
-`prompts/compress/*.md` 是**逐字节**从 planner 拷过来的（`leaf_*` / `leaf_scope_*` /
+`prompts/compress/*.md` 是插件内置的压缩提示词（`leaf_*` / `leaf_scope_*` /
 `leaf_scope_chunk_*` / `parent_*` / `budget_*` / `skeleton_*` / `retry_*`，中英各一份）。
-要看清渲染结果，看 `preview/card-preview.png`（由 `preview/card-preview.html` 渲染），
-或跑 `explore_memory_tree` 看节点文本。
+可以直接改设置里的模板，或跑 `explore_memory_tree` 看节点文本。
 
-`src/prompts.js` 复刻 `prompt_loader.render` 的严格性：模板引用了没传的占位符直接抛错，
+`src/prompts.js` 对模板渲染很严格：模板引用了没传的占位符直接抛错，
 这样少一行预算不会静默发出去。
 
 ## 配置
-
-## 设置界面
 
 打开 **设置 → 记忆树**，可以编辑：
 
@@ -80,7 +75,7 @@ profile 补丁 `$DSH_HOME/profiles/desktop/cordis.patch.yml` 的 `memory-tree` �
 
 ```yaml
 - id: memory-tree
-  name: "@xiaob/dsh-memory-tree"
+  name: "@your-scope/dsh-memory-tree"   # 安装时生成的包名
   config:
     chunkTokens: 30000     # 每片估算 token（字符数 ×1.2）
     maxChunks: 12          # 一轮最多切几片，剩下的留给下一轮
@@ -102,8 +97,8 @@ profile 补丁 `$DSH_HOME/profiles/desktop/cordis.patch.yml` 的 `memory-tree` �
 DSH 按**包名**从 profile 的 `node_modules` 解析插件：
 
 ```
-源仓库   D:\xiaob\dsh-memory-tree\
-实际加载 $DSH_HOME\profiles\desktop\node_modules\@xiaob\dsh-memory-tree\
+源仓库   <checkout>\dsh-memory-tree\
+实际加载 $DSH_HOME\profiles\<profile>\node_modules\<package>\
 ```
 
 这是**两份**。改源码不同步 = 进程里跑的还是旧那份，而插件照常启动、日志照样像模像样，
@@ -119,12 +114,12 @@ npm run verify    # sync + probe
 `inject` 里有没有 `llm`、数据库缺的列是否都能迁移。
 
 **不要用目录联接（junction）代替拷贝。** Node 会把联接解析成真实路径，
-于是从 `D:\xiaob\` 出发去解析 `@deepseek-ai/*`，而那套名字只有在 harness 里才解析得到。
+于是从 checkout 根目录出发去解析 `@deepseek-ai/*`，而那套名字只有在 harness 里才解析得到。
 
 `activate` 行末尾的 `self=` 是"到底加载了哪一份"的唯一铁证：
 
 ```
-activate  pid=…  service=…  chunkTokens=30000  nodeBudget=1000  …  base=…app.asar/…  self=file:///C:/Users/…/profiles/desktop/node_modules/@xiaob/dsh-memory-tree/index.js
+activate  pid=…  service=…  chunkTokens=30000  nodeBudget=1000  …  base=…app.asar/…  self=file:///C:/Users/…/profiles/<profile>/node_modules/<package>/index.js
 ```
 
 `base=` 是后端模块的真实位置（应以 `app.asar` 结尾，说明注入到了 app 自己那个类上），
@@ -184,25 +179,23 @@ compact   session=…  leaves=8  merges=1  nodes=5  depth=L1  blocks=6  chars=�
 
 
 
-## 已知差异（DSH 侧，不是移植遗漏）
+## 实现取舍
 
-- **触发**：planner 自己按 token 预算判断；DSH 由 `compaction-basic` 按窗口比例触发，
-  插件只负责"压这一段"。想更接近 10 万 token，调 `compaction-basic` 的 `thresholdRatio`。
-- **checkpoint 是一条消息**：planner 的每个节点是 buffer 里的一条独立消息，DSH 的
-  checkpoint 是单条 user 消息，所以节点变成多个 content block。可下钻、可寻址，
-  但"消息条数"这种计量方式不再成立。
-- **没有工作目录**：planner 的指令带 `{cwd_line}`、节点带 `[环境] 目录：…`；
-  DSH 的请求里没有可靠的 cwd，拿不到就留空（不编造）。
+- **触发**：由 `compaction-basic` 按窗口比例触发，插件只负责“压这一段”。
+  想改用固定预算，可以调 `triggerTokens` 或 `compaction-basic` 的 `thresholdRatio`。
+- **checkpoint 是一条消息**：节点放在单条 user 消息的多个 content block 里。
+  可下钻、可寻址，但“消息条数”这种计量方式不再直接成立。
+- **没有可靠的工作目录**：DSH 的请求里没有稳定的 cwd；节点里的 `[环境] 目录` 拿不到就留空，不编造。
 - **时间取自已记录的会话日志，不是猜的**：DSH 的请求消息本身不带时间戳，但会话日志里
-  每个事件都有 `event.time`（`session.append` 写的 `Date.now()`），而压缩区正是用
-  `session.deriveEventMessage(session.eventAt(seq))` 逐事件投影出来的——那个投影返回的
-  就是事件里存的那条消息对象本身。所以按**对象同一性**建索引，每条被压的消息都有精确时间；
-  节点写 `[时间]`，叶子回放每条消息带 `· HH:MM`。索引不到才退回时间采样行，再不行就不写。
-- **结构化输出**：planner 主通道是 `with_structured_output(json_mode)`；这里直接调
-  `ctx.llm.stream` + JSON 解析，失败重试一次（带"上次被截断"提示），再不行落机械摘要。
+  每个事件都有 `event.time`（`session.append` 写的 `Date.now()`），压缩区用
+  `session.deriveEventMessage(session.eventAt(seq))` 逐事件投影——返回的就是事件里存的那条消息对象本身。
+  所以按**对象同一性**建索引，每条被压的消息都有精确时间；节点写 `[时间]`，
+  叶子回放每条消息带 `· HH:MM`。索引不到才退回时间采样行，再不行就不写。
+- **结构化输出**：直接调 `ctx.llm.stream` + JSON 解析，失败重试一次（带“上次被截断”提示），
+  再不行落机械摘要。
 - **机械兜底**：某一片彻底压不出来时，仍然落一个节点（截取原文开头当摘要），
   绝不把消息从上下文里删掉却没有东西顶上。
-- **写入节奏（异步）**：planner 用后台线程；这里在 `agent/pre-step` 只截取区间并起一个后台任务，
+- **写入节奏（异步）**：在 `agent/pre-step` 只截取区间并起一个后台任务，
   摘要请求与主对话的模型请求并行跑，**不阻塞本轮回复**。等 `agent.whenIdle()` 拿到空闲维护槽后，
   再用框架的 `compaction/start → compaction/summary → 替换 surface → compaction/end` 事件序列落盘；
   这一段没有模型调用，通常几十毫秒。溢出恢复和手动 `/compact` 仍走同步路径（必须立即完成）。
@@ -228,7 +221,7 @@ pre-step:  测到超阈值 → 截取最老的平衡区间 → 返回 null（本
 > React 组件，按 `conversation.chat.node` 槽位渲染，不读取任何图片。
 
 DSH 的 Chat 视图本来就把压缩位置画成一行标记（`CompactionItem`：图标 + 标题 + 单行省略的摘要，
-点开看正文）。这里把它换成 planner 的记忆卡片，做法是**注册同一个槽位位置**，不改 DSH：
+点开看正文）。这里把它换成插件的记忆卡片，做法是**注册同一个槽位位置**，不改 DSH：
 
 ```js
 ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
@@ -272,8 +265,8 @@ DOM 不合预期就一行都不动，卸载时一定还原 —— 宁可退回�
 | `src/policy.js` | 异步路径的定价、区间选择、区间回放、空闲锁检查 |
 | `src/tool.js` | `explore_memory_tree` 下钻工具（叶子回放带 `【assistant→tool】名字(参数)`，否则只剩工具结果、看不出是谁调的） |
 | `src/status.js` | 人看的树 + 日志 |
-| `client.js` | **Web 半**：把会话区的压缩标记行换成 planner 那张记忆卡片（`conversation.chat.node` 槽位的 `compaction` 位置） |
-| `prompts/compress/` | planner 的压缩提示词，逐字节拷贝 |
+| `client.js` | **Web 半**：把会话区的压缩标记行换成记忆卡片（`conversation.chat.node` 槽位的 `compaction` 位置） |
+| `prompts/compress/` | 内置压缩提示词 |
 | `tests/policy.test.js` | 定价/区间选择/回放/空闲锁的离线测试 |
 | `tests/async.test.js` | 用假 session 跑 `defer → 后台摘要 → 空闲提交`，含提交失败回滚 |
 | `tests/smoke.test.js` | 离线测试（6 例，覆盖 checkpoint 识别/分片/合并/节点文本/下钻回放） |
@@ -281,13 +274,13 @@ DOM 不合预期就一行都不动，卸载时一定还原 —— 宁可退回�
 | `tests/probe-install.mjs` | 比对源码与 profile 里的安装副本，并检查数据库 schema |
 | `tools/sync.mjs` | 发布到 profile（`--check` 只比对不写） |
 | `tools/db-schema.mjs` | 打印数据库表结构，确认迁移状态 |
-| `preview/card-preview.html` | 用真实节点数据渲染的卡片预览（同目录有 PNG） |
 
 ## 数据库
 
 默认 `$DSH_HOME/memory-tree/memory_tree.db`（可用 `DSH_MEMORY_TREE_DB` 覆盖）。
-表只有一张 `nodes`，按 `session_id` 分区；`details` 存被压缩的原始消息、
+`nodes` 按 `session_id` 分区；`details` 存被压缩的原始消息、
 `meta.fields` 存七个结构化字段、`time_start/time_end` 存时间范围。
+`keeps` 存每个 checkpoint 实际保留的 Chat 行 key，供重启后恢复折叠边界。
 
 旧版本建的库缺 `meta/time_start/time_end` 三列，打开时用 `ALTER TABLE` 补上，
 已有行照旧渲染（只是没有字段行）。`npm run schema` 可以直接看当前状态。

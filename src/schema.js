@@ -1,11 +1,10 @@
 /**
- * The node payload planner calls `MemoryNodeOutput`: summary plus six task
- * fields, stored as `meta.fields` and rendered back into the checkpoint.
+ * The node payload: summary plus six task fields, stored as `meta.fields` and
+ * rendered back into the checkpoint.
  *
- * Two things here are load-bearing and copied from planner rather than
- * invented: the exact field set (it is what the prompt asks for, so anything
- * else silently disappears), and `applyBudget`, which enforces a total the
- * model routinely overshoots by 3-5x.
+ * Two things here are load-bearing: the exact field set (it is what the prompt
+ * asks for, so anything else silently disappears), and `applyBudget`, which
+ * enforces a total the model routinely overshoots by 3-5x.
  *
  * @module @xiaob/dsh-memory-tree/schema
  */
@@ -15,9 +14,8 @@ export const SCHEMA_VERSION = 2
 
 /**
  * Protective marker carried by node text that is already summarized.
- * planner puts it on every node message in the buffer; the compressor removes
- * it from the nodes it is about to merge, so "marked" literally means "leave
- * this one alone".
+ * The compressor removes it from the nodes it is about to merge, so "marked"
+ * literally means "leave this one alone".
  */
 export const NODE_MARKER = '[已压缩 · 不需要压缩]'
 
@@ -54,8 +52,7 @@ function obj(value) {
  * Normalize a model's JSON into the fields payload.
  *
  * Unknown keys are dropped, wrong types degrade to empty rather than throwing:
- * a summary that is 90% right is still worth landing, and planner makes the same
- * trade (pydantic `extra="ignore"` plus defaults on every field).
+ * a summary that is 90% right is still worth landing.
  * @param {unknown} raw parsed JSON, or anything close to it.
  * @returns {object} normalized fields.
  */
@@ -121,7 +118,7 @@ function fieldChars(fields) {
 }
 
 /**
- * Enforce planner's node budget.
+ * Enforce the node budget.
  *
  * `budget` is the whole-node character target (1000 by default). The prompt says
  * it, and this makes it true: summary is capped at 60%, each list is width- and
@@ -141,7 +138,7 @@ export function applyBudget(out, budget) {
   const fields = out.fields
   // The narration is a deliberately fixed-length "how I'd tell a human" line; it
   // is short enough to be noise against the total, so it never participates in
-  // the group sacrifice (planner made the same call after watching it get wiped).
+  // the group sacrifice.
   fields.narration = fields.narration.slice(0, 80)
   const task = fields.task
   task.goal = task.goal.slice(0, 300)
@@ -194,8 +191,8 @@ export function applyBudget(out, budget) {
 }
 
 /**
- * Render the payload as planner's node lines: one labelled line per non-empty
- * group, empty groups omitted entirely (never "无 / 暂无" placeholders).
+ * Render the payload as node lines: one labelled line per non-empty group,
+ * empty groups omitted entirely (never "无 / 暂无" placeholders).
  * @param {object} fields fields payload.
  * @returns {string[]} lines, no trailing newline.
  */

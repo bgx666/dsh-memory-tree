@@ -1,6 +1,5 @@
 /**
- * Memory-tree compaction for DeepSeek Harness — a port of planner's
- * `SummarizationMiddleware`, not of its storage class.
+ * Memory-tree compaction for DeepSeek Harness.
  *
  * Replaces the summarization step of the installed compaction backend while
  * leaving everything else — locking, tool pairing, replacement, shrink
@@ -270,11 +269,11 @@ function readPromptOverrides(config) {
 }
 
 /**
- * Resolved budgets, mirroring planner's constants.
+ * Resolved budgets.
  *
- * Defaults are planner's: 30k tokens per chunk, 12 chunks per round, a
- * 1000-character node, 8 nodes per level with 4 merged into a parent, and at
- * most 8 merge batches per round.
+ * Defaults: 30k tokens per chunk, 12 chunks per round, a 1000-character node,
+ * 8 nodes per level with 4 merged into a parent, and at most 8 merge batches
+ * per round.
  *
  * Precedence is default < environment < profile config: the environment is for
  * one-off inspection, the profile patch is the deployment's declared intent.
@@ -299,7 +298,7 @@ function readLimits(config = {}) {
   limits.triggerTokens = configCount(config['triggerTokens'], envCount('DSH_MEMORY_TREE_TRIGGER_TOKENS', 0))
   limits.retainMessages = configCount(config['retainMessages'], envCount('DSH_MEMORY_TREE_RETAIN_MESSAGES', 20))
   limits.language = configText(config['language']) === 'en' ? 'en' : 'zh'
-  // Planner compresses on a background thread. `sync` is the escape hatch for
+  // Background compression is the default. `sync` is the escape hatch for
   // one-off debugging: it restores the backend's blocking behavior.
   limits.sync = config['async'] === false
     || configText(config['mode']) === 'sync'
@@ -355,7 +354,7 @@ function resolveSpecForWindow(config, header, info, limits, contextWindow) {
   if (!Number.isFinite(thresholdTokens) || thresholdTokens <= 0) return null
   return {
     thresholdTokens,
-    // Count-only retention, mirroring Planner's `SUMMARIZE_KEEP_MESSAGES`.
+    // Count-only retention: the tail is a message count, never a token budget.
     retainMessages: Math.max(0, Math.trunc(Number(limits?.retainMessages ?? 0))),
   }
 }

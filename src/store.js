@@ -1,8 +1,7 @@
 /**
  * Durable memory tree, one SQLite database for every session of this install.
  *
- * The session id is the partition key, which is exactly the role `character_id`
- * plays in planner's `SQLiteMemoryTree`. Nodes are append-only: a merge never
+ * The session id is the partition key. Nodes are append-only: a merge never
  * deletes children, it marks them inactive and points them at their parent, so
  * `explore_memory_tree` can still drill into what the parent replaced.
  *

@@ -42,7 +42,7 @@ function policyFor(config, target) {
  * @param {object} header the session's latest durable request header.
  * @param {object} info the adapter's resolved model info.
  * @param {{triggerTokens?: number, retainMessages?: number}} [limits] explicit
- *   planner-style budgets; `0`/absent falls back to the window-ratio policy.
+ *   budgets; `0`/absent falls back to the window-ratio policy.
  * @param {{contextWindow?: number, pressureTokens?: number, projectedTokens?: number}} [pressure]
  *   the token meter's live context-pressure view (the same denominator the
  *   composer percentage uses), preferred over the adapter capacity so the
@@ -68,9 +68,8 @@ export function resolveSpec(config, header, info, limits = {}, pressure) {
   const thresholdTokens = fixedTrigger > 0
     ? Math.min(fixedTrigger, pressureBudget)
     : Math.floor(Math.min(contextWindow * Number(policy.thresholdRatio), pressureBudget))
-  // Retention is deliberately a *message count* only. Planner keeps a fixed
-  // number of recent messages; mixing in a token budget made it impossible to
-  // tell which rule produced the cut.
+  // Retention is deliberately a *message count* only. Mixing in a token budget
+  // would make it impossible to tell which rule produced the cut.
   const retainMessages = Math.max(0, Math.trunc(Number(limits?.retainMessages ?? 0)))
   if (!Number.isFinite(thresholdTokens) || thresholdTokens <= 0) return null
   return { thresholdTokens, retainMessages }
