@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-10-31.22'
+    const BUILD = '2026-10-31.23'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -220,6 +220,10 @@ window.__ModuleLoader__.load({
       let count = 0
       for (let index = 0; index < boundaryIndex; index += 1) {
         const element = rows[index]
+        // The checkpoint row (this card) sits immediately before the retained
+        // tail in DOM order. It is the whole point of the fold, so never hide
+        // the row that owns this card; CSS moves it to the top afterwards.
+        if (element === row || element.contains?.(self) === true) continue
         if (kept.includes(element)) continue
         // A grouping row before the boundary may contain a retained member;
         // hiding it would hide that member too. Its earlier children are still

@@ -178,20 +178,21 @@ const keyContainer = {
 const keyRows = [
   fakeKeyRow('old-1', '13:input-messageold'),
   fakeKeyRow('old-2', '9:tool-callold'),
+  fakeKeyRow('card', '10:compactionc'),
   fakeKeyRow('kept-1', '13:input-messagekept'),
   fakeKeyRow('kept-2', '14:assistant-step7:2'),
-  fakeKeyRow('card', '10:compactionc'),
 ]
 for (const [index, row] of keyRows.entries()) {
   row.parentElement = keyContainer
   row.previousElementSibling = keyRows[index - 1] ?? null
 }
-const keyAnchor = { parentElement: keyRows[4], previousElementSibling: null }
+const keyAnchor = { parentElement: keyRows[2], previousElementSibling: null }
 assert.equal(module.__foldBeforeKeys(keyAnchor, ['13:input-messagekept', '14:assistant-step7:2']), 2)
 assert.equal(keyRows[0].style.display, 'none')
 assert.equal(keyRows[1].style.display, 'none')
-assert.equal(keyRows[2].style.display, '')
+assert.equal(keyRows[2].style.display, '', 'the checkpoint card itself must stay visible')
 assert.equal(keyRows[3].style.display, '')
+assert.equal(keyRows[4].style.display, '')
 module.__foldSiblings(keyAnchor, false)
 
 const earlierCard = [fakeRow('r1'), fakeRow('older-card', true), fakeRow('r3'), fakeRow('card')]
