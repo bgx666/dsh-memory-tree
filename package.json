@@ -1,0 +1,74 @@
+{
+  "name": "@xiaob/dsh-memory-tree",
+  "version": "0.3.9",
+  "private": false,
+  "type": "module",
+  "description": "Hierarchical memory-tree compaction provider for DeepSeek Harness (port of planner's SummarizationMiddleware)",
+  "license": "MIT",
+  "author": "bgx666",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bgx666/dsh-memory-tree.git"
+  },
+  "homepage": "https://github.com/bgx666/dsh-memory-tree#readme",
+  "bugs": {
+    "url": "https://github.com/bgx666/dsh-memory-tree/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "compaction",
+    "memory-tree",
+    "context"
+  ],
+  "engines": {
+    "dsh": ">=0.2.1-rc.3 <0.3.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "src/*.js",
+    "prompts/compress/*.md",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-renderer"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "test": "node tests/policy.test.js && node tests/async.test.js && node tests/smoke.test.js && node tests/client.test.js",
+    "sync": "node tools/sync.mjs",
+    "probe": "node tests/probe-install.mjs",
+    "verify": "node tools/sync.mjs && node tests/probe-install.mjs",
+    "status": "node src/status.js",
+    "schema": "node tools/db-schema.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-compaction-basic": "*",
+    "@deepseek-ai/dsh-session": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}

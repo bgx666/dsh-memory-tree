@@ -1,0 +1,1189 @@
+/**
+ * Web half of the memory-tree plugin: render the compaction marker as a memory card,
+ * memory card instead of the backend's one-line row.
+ *
+ * This file is not a normal ES module. The client loader evaluates it in the
+ * page and expects the `__ModuleLoader__.load({ id, factory })` envelope, where
+ * the factory receives the app's own `require` (see
+ * `@deepseek-ai/dsh-client-ui-brand-official/lib/client.js` for the same shape).
+ * There is no build step: `react` is resolved from the app at runtime.
+ *
+ * The seat is `conversation.chat.node`, a keyed slot. Its contract says "Reusing
+ * a key replaces that node renderer", so registering `compaction` replaces the
+ * shipped `CompactionItem` row; a plugin that never loads simply leaves the
+ * shipped row in place, which is the degradation we want.
+ *
+ * @module @xiaob/dsh-memory-tree/client
+ */
+
+window.__ModuleLoader__.load({
+  id: '@xiaob/dsh-memory-tree',
+  factory: (require) => {
+    var module = { exports: {} }
+    var exports = module.exports
+    Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
+    const react = require('react')
+    const h = react.createElement
+
+    /** Required service: the UI slot registry. */
+    const inject = ['slots']
+
+    /**
+     * Build stamp, bumped on every behavioural change to this file.
+     *
+     * The host composes the client graph once at boot and then serves those
+     * bytes immutably, so a stale page is indistinguishable from a broken one —
+     * unless the build says which one it is. Keep this in the first console line.
+     */
+    const BUILD = '2026-10-31.22'
+
+    // ── the checkpoint text → nodes ────────────────────────────────────────
+
+    /** `[node0_001 · L0 · 第1-29条] [已压缩 · 不需要压缩]` */
+    const HEAD = /^\[node(\d+)_(\d+) · L(\d+) · 第(\d+)-(\d+)条\]/
+    /** `[记忆树] 共 5 个活跃节点，深度 L0，已折叠到第 150 条。…` */
+    const DIGEST = /^\[记忆树\]/
+
+    /**
+     * Split the checkpoint body into the nodes it carries.
+     *
+     * The text is exactly what this plugin's summarizer returned to the backend,
+     * so the shape is ours to rely on — but a checkpoint written by another
+     * provider (or by an older build) will not match, and then this returns no
+     * nodes and the card falls back to showing the raw text.
+     * @param {string} text checkpoint summary.
+     * @returns {{header: string, raw: string, nodes: object[]}} parsed card content.
+     */
+    function parseSummary(text) {
+      const raw = String(text ?? '')
+      // The backend joins the checkpoint's content blocks with an empty string,
+      // so a digest written before block separators existed can read
+      // `...节点。[node0_001 ...]`. Put every node header on its own line.
+      const normalized = raw.replace(
+        /(?<!\n)(?=\[node\d+_\d+ · L\d+ · 第\d+-\d+条\])/g,
+        '\n',
+      )
+      const lines = normalized.split(/\r?\n/)
+      let header = ''
+      const nodes = []
+      let current = null
+      for (const line of lines) {
+        const head = HEAD.exec(line)
+        if (head !== null) {
+          current = {
+            id: `node${head[1]}_${head[2]}`,
+            level: Number(head[3]),
+            start: Number(head[4]),
+            end: Number(head[5]),
+            summary: '',
+            time: '',
+            body: [],
+          }
+          nodes.push(current)
+          continue
+        }
+        if (current === null) {
+          if (DIGEST.test(line)) header = line.replace(/^\[记忆树\]\s*/, '').trim()
+          continue
+        }
+        if (line.startsWith('[摘要] ')) current.summary = line.slice(4).trim()
+        else if (line.startsWith('[时间] ')) current.time = line.slice(4).trim()
+        else if (line.trim() !== '' && !line.startsWith('[已压缩')) current.body.push(line)
+      }
+      return { header, raw: raw.trim(), nodes }
+    }
+
+    // ── B: fold the shadowed conversation into the card ────────────────────
+
+    /** Rows this card hid, and the inline `display` each had before. */
+    const folded = new Map()
+
+    /**
+     * The Chat row that owns this card.
+     *
+     * The slot renderer wraps a contribution in
+     * `[data-slot="conversation.chat.node"]` (`display: contents`), so the card's
+     * immediate parent is that wrapper — not the transcript row. Hiding the
+     * wrapper's siblings would touch nothing. The row is the nearest ancestor
+     * carrying `data-chat-node-key`.
+     * @param {HTMLElement | null} self card root.
+     * @returns {HTMLElement | null} owning row, or the immediate parent as a fallback.
+     */
+    function rowOf(self) {
+      let element = self
+      while (element !== null && element !== undefined) {
+        if (typeof element.hasAttribute === 'function'
+          && element.hasAttribute('data-chat-node-key')) return element
+        element = element.parentElement
+      }
+      return self?.parentElement ?? null
+    }
+
+    /** Whether a transcript row contains a memory card. */
+    function hasCard(row) {
+      if (row === null || row === undefined) return false
+      if (row.hasAttribute?.('data-memtree-card') === true) return true
+      const found = row.querySelector?.('[data-memtree-card]')
+      return found !== null && found !== undefined
+    }
+
+    /**
+     * Hide or restore every transcript row above this card.
+     *
+     * DSH keeps the shadowed history in the transcript on purpose ("the marker
+     * reports where the model stopped seeing that history, it does not replace
+     * it"), and no supported seam can filter rows — so the fold is done on the
+     * owning row's previous siblings, which is the one part of the transcript
+     * this renderer can address. It deliberately walks past older memory cards:
+     * two compactions are one evolving tree, so the latest card owns the fold
+     * and the older card is hidden by the latest-only filter.
+     *
+     * Everything is guarded: an unexpected DOM (no row, a virtualized list that
+     * recycles rows) leaves the transcript untouched rather than blanking it,
+     * and unmount always restores.
+     * The checkpoint is appended after the retained tail, so the rows closest
+     * to the card are the newest context messages. `keep` leaves that many
+     * previous rows visible and folds everything older; without it the card
+     * would hide the very messages the retention setting kept.
+     * @param {HTMLElement | null} self this card's root.
+     * @param {boolean} hide whether to fold.
+     * @param {number} [keep] previous rows to leave visible.
+     * @returns {number} how many rows are folded.
+     */
+    function foldSiblings(self, hide, keep = 0) {
+      const row = rowOf(self)
+      const parent = row?.parentElement
+      if (parent === null || parent === undefined) return 0
+      let remaining = Math.max(0, Math.trunc(Number(keep) || 0))
+      let count = 0
+      let visited = 0
+      let cursor = row.previousElementSibling
+      while (cursor !== null && visited < 2000) {
+        visited += 1
+        try {
+          if (hide) {
+            if (remaining > 0) {
+              remaining -= 1
+              if (folded.has(cursor)) {
+                cursor.style.display = folded.get(cursor) ?? ''
+                folded.delete(cursor)
+              }
+            } else if (!folded.has(cursor)) {
+              folded.set(cursor, cursor.style.display)
+              cursor.style.display = 'none'
+              count += 1
+            }
+          } else if (folded.has(cursor)) {
+            cursor.style.display = folded.get(cursor) ?? ''
+            folded.delete(cursor)
+            count += 1
+          }
+        } catch {
+          break
+        }
+        cursor = cursor.previousElementSibling
+      }
+      return count
+    }
+
+    // ── the card ───────────────────────────────────────────────────────────
+
+    /**
+     * Hide every transcript row before the oldest retained row.
+     *
+     * The Host records the Chat keys of the messages that survived the
+     * replacement. Folding starts immediately before the oldest rendered one,
+     * so the visible boundary is the configured retention boundary itself, not
+     * a guessed row count, and no retained message is ever hidden.
+     * @param {HTMLElement | null} self this card's root.
+     * @param {readonly string[]} keys retained Chat row keys.
+     * @returns {number} how many rows are folded.
+     */
+    function foldBeforeKeys(self, keys) {
+      const wanted = new Set((Array.isArray(keys) ? keys : []).map(String))
+      if (wanted.size === 0) return 0
+      const row = rowOf(self)
+      const parent = row?.parentElement
+      if (parent === null || parent === undefined) return 0
+      let rows
+      try {
+        rows = [...parent.querySelectorAll('[data-chat-node-key]')]
+      } catch {
+        return 0
+      }
+      const kept = rows.filter(element =>
+        wanted.has(element.getAttribute('data-chat-node-key')))
+      if (kept.length === 0) return 0
+      const boundary = kept[0]
+      const boundaryIndex = rows.indexOf(boundary)
+      if (boundaryIndex <= 0) return 0
+      let count = 0
+      for (let index = 0; index < boundaryIndex; index += 1) {
+        const element = rows[index]
+        if (kept.includes(element)) continue
+        // A grouping row before the boundary may contain a retained member;
+        // hiding it would hide that member too. Its earlier children are still
+        // folded individually below.
+        if (kept.some(keptRow => element.contains?.(keptRow) === true)) continue
+        try {
+          if (!folded.has(element)) {
+            folded.set(element, element.style.display)
+            element.style.display = 'none'
+            count += 1
+          }
+        } catch {
+          break
+        }
+      }
+      return count
+    }
+
+    /** Restore every row this card hid, including rows nested in groups. */
+    function restoreFolded() {
+      for (const [element, display] of folded) {
+        try {
+          element.style.display = display
+        } catch {
+          // A recycled row no longer matters; the remaining entries still restore.
+        }
+      }
+      folded.clear()
+    }
+
+    const S = {
+      card: {
+        margin: '10px 0',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        fontSize: '12.5px',
+        lineHeight: 1.6,
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+      },
+      bar: { display: 'flex', alignItems: 'center', gap: '8px', margin: '0 2px 0' },
+      label: {
+        flex: 'none',
+        fontSize: '10px',
+        letterSpacing: '0.4px',
+        fontWeight: 600,
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+      },
+      meta: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      tool: {
+        flex: 'none',
+        cursor: 'pointer',
+        fontSize: '11.5px',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+        background: 'none',
+        border: 'none',
+        padding: '2px 4px',
+        borderRadius: '6px',
+      },
+      nodeCard: {
+        border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '10px',
+        background: 'var(--dsw-alias-bg-layer-1, #fff)',
+        padding: '10px 12px',
+      },
+      nodeHead: {
+        display: 'flex',
+        gap: '8px',
+        alignItems: 'baseline',
+        cursor: 'pointer',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+      },
+      nodeId: { fontFamily: 'var(--dsw-font-markdown-code-block-small-font-family, ui-monospace)', fontSize: '11.5px' },
+      nodeRange: { flex: '1 1 auto', minWidth: 0, fontSize: '11.5px' },
+      nodeTime: { flex: 'none', fontSize: '11px', opacity: 0.8 },
+      nodeSummary: {
+        marginTop: '3px',
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+        display: '-webkit-box',
+        WebkitLineClamp: 2,
+        WebkitBoxOrient: 'vertical',
+        overflow: 'hidden',
+      },
+      nodeSummaryOpen: { marginTop: '3px', color: 'var(--dsw-alias-label-tertiary, #6b7280)' },
+      nodeBody: {
+        marginTop: '6px',
+        paddingTop: '6px',
+        borderTop: '1px dashed var(--dsw-alias-border-l2, #e5e7eb)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+      },
+      delta: {
+        margin: '0 2px',
+        fontSize: '11px',
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+      },
+    }
+
+    /** Compact token count for the card's release line. */
+    function shortTokens(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number) || number <= 0) return '0'
+      if (number >= 1_000_000) return `${Math.round(number / 100_000) / 10}M`
+      if (number >= 1_000) return `${Math.round(number / 100) / 10}K`
+      return String(Math.round(number))
+    }
+
+    /**
+     * Latest-only registry for compaction cards.
+     *
+     * The transcript keeps older compaction markers in its history; the tree
+     * is one evolving structure, so only the card with the largest shadowed
+     * end renders. The newest card owns the fold and hides every older row,
+     * including older cards.
+     */
+    const cardEnds = new Map()
+    const cardListeners = new Set()
+
+    function latestCardEnd() {
+      let latest = 0
+      for (const value of cardEnds.values()) latest = Math.max(latest, value)
+      return latest
+    }
+
+    function useLatestCard(id, end) {
+      const [latest, setLatest] = react.useState(0)
+      react.useEffect(() => {
+        if (id === '' || end <= 0) return undefined
+        cardEnds.set(id, end)
+        const update = () => setLatest(latestCardEnd())
+        cardListeners.add(update)
+        update()
+        return () => {
+          cardEnds.delete(id)
+          cardListeners.delete(update)
+          update()
+        }
+      }, [id, end])
+      if (latest === 0 || end <= 0) return true
+      return end >= latest
+    }
+
+    /**
+     * Memory card, filled with the tree this plugin wrote.
+     * @param {{node?: {data?: object, summary?: string}, data?: object}} props Chat node props.
+     * @returns {object} the card element.
+     */
+    function MemoryTreeCard({ node, sessionId }) {
+      // The seat hands over the Chat node, whose payload sits on `.data`; tolerate
+      // the payload itself so a shape change degrades to a plain card instead of
+      // an empty one.
+      const data = (node?.data ?? node ?? {})
+      const cardId = String(data.compactionId ?? '')
+      // `CompactionSummaryNode` exposes the summary event's seq; the range
+      // fields belong to the summary payload and are not part of the node.
+      const cardEnd = Number(data.summaryEventSeq)
+        || Number(data.shadowedRange?.end)
+        || Number(Array.isArray(data.shadowedSeqs) ? data.shadowedSeqs.at(-1) : 0)
+        || 0
+      const isLatest = useLatestCard(cardId, cardEnd)
+      const parsed = react.useMemo(() => {
+        try {
+          return parseSummary(data.summary)
+        } catch {
+          return { header: '', raw: String(data.summary ?? ''), nodes: [] }
+        }
+      }, [data.summary])
+      const [openId, setOpenId] = react.useState(null)
+      const [keepKeys, setKeepKeys] = react.useState(null)
+      const root = react.useRef(null)
+
+      // The card node carries the checkpoint seq but not the retained rows.
+      // Read the Host's keep set so the fold boundary is the actual retention
+      // boundary rather than a fixed number of DOM rows.
+      react.useEffect(() => {
+        if (!isLatest) return undefined
+        const checkpoint = Number(data.seq)
+        if (!Number.isSafeInteger(checkpoint) || checkpoint <= 0) return undefined
+        let alive = true
+        const query = new URLSearchParams({ compaction: String(checkpoint) })
+        if (sessionId !== undefined && sessionId !== null && sessionId !== '') {
+          query.set('session', String(sessionId))
+        }
+        const token = new URLSearchParams(location.search).get('token')
+        if (token !== null && token !== '') query.set('token', token)
+        void fetch(`/memory-tree/status?${query.toString()}`, { cache: 'no-store' })
+          .then(response => response.ok ? response.json() : null)
+          .then(body => {
+            if (!alive) return
+            setKeepKeys(Array.isArray(body?.keep) ? body.keep.map(String) : null)
+          })
+          .catch(() => {
+            // No keep set means no DOM fold; showing compressed history is
+            // safer than hiding retained messages.
+            if (alive) setKeepKeys(null)
+          })
+        return () => { alive = false }
+      }, [isLatest, data.seq, sessionId])
+
+      // Folding lives in an effect because it touches siblings React does not
+      // own. Re-running on every child mutation keeps it correct when the
+      // transcript appends a turn while the card stays mounted. The fold is
+      // permanent: the card is the start of the visible conversation, and there
+      // is no "expand original" affordance.
+      react.useEffect(() => {
+        if (!isLatest || !Array.isArray(keepKeys)) return undefined
+        const self = root.current
+        if (self === null) return undefined
+        console.info(`[memtree] card rendered (${parsed.nodes.length} node(s))`,
+          { nodeKeys: Object.keys(node ?? {}), dataKeys: Object.keys(data ?? {}) })
+        try {
+          const row = rowOf(self)
+          const originalOrder = row?.style.order ?? ''
+          if (row !== null && row !== undefined) row.style.order = '-1'
+          const apply = () => {
+            if (keepKeys.length === 0) foldSiblings(self, true)
+            else foldBeforeKeys(self, keepKeys)
+          }
+          apply()
+          const parent = row?.parentElement
+          if (parent === null || parent === undefined) return undefined
+          const observer = new MutationObserver(apply)
+          observer.observe(parent, { childList: true, subtree: true })
+          return () => {
+            observer.disconnect()
+            restoreFolded()
+            if (row !== null && row !== undefined) row.style.order = originalOrder
+          }
+        } catch (error) {
+          // Hiding rows is a bonus: if the DOM is not what this expects, the card
+          // stays and nothing above it is touched.
+          console.warn('[memtree] could not fold the shadowed transcript:', error)
+          return undefined
+        }
+      }, [isLatest, keepKeys])
+
+      if (!isLatest) return null
+
+      const toggleRow = (id) => setOpenId(open => (open === id ? null : id))
+      const shadowedCount = Number(data.shadowedItemCount) || 0
+      const shadowedTokens = Number(data.shadowedTokenCount) || 0
+      // The checkpoint's own token count is enough here; the composer owns the
+      // context percentage.
+      const summaryTokens = Number(data.checkpointTokens) > 0
+        ? Number(data.checkpointTokens)
+        : Math.ceil(String(data.summary ?? '').length / 4) + 8
+      const summaryShare = `摘要节点 ~${shortTokens(summaryTokens)} token`
+
+      const children = [
+        h('div', { key: 'bar', style: S.bar }, [
+          h('div', { key: 'label', style: S.label },
+            parsed.nodes.length === 0 ? '记忆摘要' : `记忆摘要 · ${parsed.nodes.length} 个节点`),
+          h('div', { key: 'meta', style: S.meta },
+            parsed.header === ''
+              ? (data.shadowedItemCount ? `已压缩 ${data.shadowedItemCount} 条上下文` : '早期对话已压缩')
+              : parsed.header),
+        ]),
+        shadowedCount > 0
+          ? h('div', { key: 'delta', style: S.delta },
+            `本次压缩 ${shadowedCount} 条 · 释放约 ${shortTokens(shadowedTokens)} token`)
+          : null,
+        h('div', { key: 'share', style: S.delta }, summaryShare),
+      ]
+
+      if (parsed.nodes.length === 0) {
+        // Not our checkpoint (another provider, or a checkpoint older than the
+        // tree): show the text rather than an empty card.
+        children.push(h('div', { key: 'raw', style: S.nodeCard }, [
+          h('div', { key: 'rawText', style: S.nodeBody }, parsed.raw),
+        ]))
+        return h('div', { ref: root, 'data-memtree-card': '', style: S.card }, children)
+      }
+
+      for (const item of parsed.nodes) {
+        const open = openId === item.id
+        children.push(h('div', {
+          key: item.id,
+          style: S.nodeCard,
+          'data-memtree-node': item.id,
+        }, [
+          h('div', {
+            key: 'head',
+            style: S.nodeHead,
+            role: 'button',
+            tabIndex: 0,
+            'aria-expanded': open,
+            onClick: () => toggleRow(item.id),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                toggleRow(item.id)
+              }
+            },
+          }, [
+            h('span', { key: 'id', style: S.nodeId }, item.id),
+            h('span', { key: 'range', style: S.nodeRange }, `第${item.start}-${item.end}条`),
+            h('span', { key: 'time', style: S.nodeTime }, item.time),
+          ]),
+          h('div', { key: 'summary', style: open ? S.nodeSummaryOpen : S.nodeSummary }, item.summary),
+          open && item.body.length > 0
+            ? h('div', { key: 'body', style: S.nodeBody }, item.body.join('\n'))
+            : null,
+        ]))
+      }
+
+      return h('div', { ref: root, 'data-memtree-card': '', style: S.card }, children)
+    }
+
+    // ── settings page ─────────────────────────────────────────────────────
+
+    /** Host settings namespace owned by the plugin entry. */
+    const SETTINGS_NS = 'memory-tree'
+
+    /** Numeric settings, with their label, hint, and lower bound. */
+    const SETTINGS_NUMBERS = [
+      ['chunkTokens', '每片 token 上限', '一次压缩请求的分片上限，默认 30000。', 1],
+      ['maxChunks', '每轮最多分片', '一次压缩最多切几片，默认 12。', 1],
+      ['triggerTokens', '触发阈值（token）', '0 = 按模型窗口比例；正数时达到这个预算才触发压缩。', 0],
+      ['retainMessages', '保留最近消息条数', '只按消息条数保留；最近 N 条整消息原样留在上下文里。', 1],
+      ['nodeBudget', '节点字数预算', '整节点目标字数，默认 1000，summary 约占 40%。', 200],
+      ['mergeThreshold', '合并阈值', '某层活跃节点达到这个数才合并，默认 8。', 2],
+      ['branch', '每次合并节点数', '每次取最早几个节点合并，默认 4。', 2],
+      ['maxMerges', '每轮最多合并批数', '一次压缩最多向上合并几批，默认 8。', 1],
+    ]
+
+    /** Prompt templates, grouped by language and kind. */
+    const PROMPT_KINDS = [
+      ['leaf', '叶子压缩'],
+      ['leafScope', '单分片范围'],
+      ['leafScopeChunk', '多分片范围'],
+      ['budget', '长度预算'],
+      ['skeleton', 'JSON 形状'],
+      ['parent', '父节点合并'],
+      ['retry', '截断重试'],
+    ]
+
+    const PROMPT_FIELD = {
+      leaf: 'promptLeaf',
+      leafScope: 'promptLeafScope',
+      leafScopeChunk: 'promptLeafScopeChunk',
+      budget: 'promptBudget',
+      skeleton: 'promptSkeleton',
+      parent: 'promptParent',
+      retry: 'promptRetry',
+    }
+
+    const PROMPT_PLACEHOLDERS = {
+      leaf: '{scope} {cwd_line} {budget_line}',
+      leafScope: '{marker} {start} {end}',
+      leafScopeChunk: '{marker} {start} {end} {anchor} {anchor_end}',
+      budget: '{chars} {summary} {rest}',
+      skeleton: '（无占位符）',
+      parent: '{n} {ids} {marker} {budget_line}',
+      retry: '{chars} {summary}',
+    }
+
+    const ALL_SETTINGS_FIELDS = [
+      ...SETTINGS_NUMBERS.map(([field]) => field),
+      'language',
+      'async',
+      ...PROMPT_KINDS.flatMap(([kind]) => [`${PROMPT_FIELD[kind]}Zh`, `${PROMPT_FIELD[kind]}En`]),
+    ]
+
+    const SS = {
+      section: { maxWidth: '780px', padding: '2px 2px 24px', color: 'var(--dsw-alias-label-primary, #111827)' },
+      title: { margin: '0 0 6px', fontSize: '16px', fontWeight: 600 },
+      intro: { margin: '0 0 14px', color: 'var(--dsw-alias-label-tertiary, #6b7280)', fontSize: '12.5px', lineHeight: 1.7 },
+      card: {
+        border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '10px',
+        padding: '12px 14px',
+        marginBottom: '10px',
+        background: 'var(--dsw-alias-bg-layer-1, #fff)',
+      },
+      cardTitle: { margin: '0 0 10px', fontSize: '13px', fontWeight: 600 },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px 14px' },
+      field: { display: 'flex', flexDirection: 'column', gap: '3px' },
+      label: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary, #4b5563)' },
+      input: {
+        boxSizing: 'border-box',
+        width: '100%',
+        padding: '5px 8px',
+        border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '6px',
+        background: 'var(--dsw-alias-bg-base, #fff)',
+        color: 'var(--dsw-alias-label-primary, #111827)',
+        font: 'inherit',
+        fontSize: '12.5px',
+      },
+      hint: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary, #6b7280)', lineHeight: 1.5 },
+      row: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      button: {
+        cursor: 'pointer',
+        border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '6px',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+        padding: '4px 9px',
+        fontSize: '12px',
+      },
+      primary: {
+        cursor: 'pointer',
+        border: '1px solid var(--dsw-alias-state-business-primary, #2563eb)',
+        borderRadius: '6px',
+        background: 'var(--dsw-alias-state-business-primary, #2563eb)',
+        color: '#fff',
+        padding: '5px 12px',
+        fontSize: '12px',
+      },
+      active: {
+        cursor: 'pointer',
+        border: '1px solid var(--dsw-alias-state-business-primary, #2563eb)',
+        borderRadius: '6px',
+        background: 'var(--dsw-alias-state-business-primary-alpha, #eff6ff)',
+        color: 'var(--dsw-alias-state-business-primary, #2563eb)',
+        padding: '4px 9px',
+        fontSize: '12px',
+      },
+      textarea: {
+        boxSizing: 'border-box',
+        width: '100%',
+        minHeight: '340px',
+        resize: 'vertical',
+        padding: '8px 10px',
+        border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '8px',
+        background: 'var(--dsw-alias-bg-base, #fff)',
+        color: 'var(--dsw-alias-label-primary, #111827)',
+        fontFamily: 'var(--dsw-font-markdown-code-block-small-font-family, ui-monospace, Consolas, monospace)',
+        fontSize: '12px',
+        lineHeight: 1.5,
+        whiteSpace: 'pre-wrap',
+      },
+      note: { marginTop: '8px', fontSize: '12px', color: 'var(--dsw-alias-label-tertiary, #6b7280)' },
+      error: { marginTop: '8px', fontSize: '12px', color: 'var(--dsw-alias-state-error-primary, #b91c1c)' },
+      status: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '6px',
+        margin: '4px 0',
+        padding: '2px 8px',
+        border: '1px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '999px',
+        background: 'var(--dsw-alias-bg-layer-1, #fff)',
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+        fontSize: '11px',
+        lineHeight: 1.5,
+      },
+    }
+
+    /** Tiny observable store used as the slot's hooks compartment. */
+    function createStore(initial) {
+      let snapshot = initial
+      const listeners = new Set()
+      return {
+        getSnapshot: () => snapshot,
+        subscribe: (listener) => {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+        set: (next) => {
+          snapshot = next
+          for (const listener of listeners) listener()
+        },
+      }
+    }
+
+    /** Bridge one ConfigForm scope into a store plus save/reset callbacks. */
+    function createSettingsController(scope) {
+      const store = createStore(scope.getSnapshot())
+      const off = scope.subscribe(() => store.set(scope.getSnapshot()))
+      return {
+        store,
+        save: (ops, revision) => scope.mutate(ops, revision),
+        reset: (field) => scope.unset(field),
+        dispose: off,
+      }
+    }
+
+    /** Seed editable text from one resolved section. */
+    function seedDrafts(value) {
+      const drafts = {}
+      for (const field of ALL_SETTINGS_FIELDS) {
+        const raw = value?.[field]
+        drafts[field] = raw === undefined || raw === null ? '' : String(raw)
+      }
+      return drafts
+    }
+
+    /** One numeric settings control. */
+    function NumberSetting({ field, label, hint, text, overridden, disabled, onEdit, onReset }) {
+      return h('label', { style: SS.field }, [
+        h('span', { key: 'label', style: SS.label }, [
+          label,
+          overridden
+            ? h('button', {
+              key: 'reset',
+              type: 'button',
+              style: { ...SS.button, marginLeft: '8px', padding: '1px 6px', fontSize: '10px' },
+              disabled,
+              onClick: (event) => { event.preventDefault(); onReset(field) },
+            }, '默认')
+            : null,
+        ]),
+        h('input', {
+          key: 'input',
+          type: 'text',
+          inputMode: 'numeric',
+          style: SS.input,
+          value: text,
+          disabled,
+          onChange: (event) => onEdit(field, event.target.value),
+        }),
+        h('span', { key: 'hint', style: SS.hint }, hint),
+      ])
+    }
+
+    /**
+     * The Memory Tree settings section: compression budgets, trigger policy,
+     * and the editable prompt templates.
+     */
+    function MemoryTreeSettings({ useMemoryTreeSettings, save, resetField }) {
+      const snapshot = useMemoryTreeSettings(value => value)
+      const [drafts, setDrafts] = react.useState(null)
+      const [language, setLanguage] = react.useState('zh')
+      const [kind, setKind] = react.useState('leaf')
+      const [notice, setNotice] = react.useState('')
+      const [saving, setSaving] = react.useState(false)
+      const dirty = react.useRef(false)
+
+      react.useEffect(() => {
+        if (snapshot.status !== 'ready' || snapshot.value === undefined || dirty.current) return
+        setDrafts(seedDrafts(snapshot.value))
+      }, [snapshot.status, snapshot.value, snapshot.revision])
+
+      const edit = (field, text) => {
+        dirty.current = true
+        setDrafts(previous => ({ ...(previous ?? {}), [field]: text }))
+        setNotice('')
+      }
+
+      const reset = async (field) => {
+        try {
+          const ok = await resetField(field)
+          dirty.current = false
+          setNotice(ok ? '已恢复默认' : '恢复默认被 Host 拒绝')
+        } catch (error) {
+          setNotice(`恢复失败：${String(error?.message ?? error)}`)
+        }
+      }
+
+      const discard = () => {
+        dirty.current = false
+        setDrafts(seedDrafts(snapshot.value))
+        setNotice('已放弃未保存的修改')
+      }
+
+      const persist = async () => {
+        if (drafts === null || snapshot.value === undefined) return
+        const ops = []
+        let problem = ''
+        for (const [field, label, , min] of SETTINGS_NUMBERS) {
+          const raw = String(drafts[field] ?? '').trim()
+          if (raw === '') {
+            ops.push({ op: 'unset', path: [field] })
+            continue
+          }
+          const number = Number(raw)
+          if (!Number.isInteger(number) || number < min) {
+            problem = `${label} 必须是 ≥ ${min} 的整数`
+            break
+          }
+          if (number !== snapshot.value[field]) {
+            ops.push({ op: 'set', path: [field], value: number })
+          }
+        }
+        if (problem === '') {
+          if (drafts.language !== snapshot.value.language) {
+            ops.push({ op: 'set', path: ['language'], value: drafts.language })
+          }
+          const asyncValue = drafts.async === 'true'
+          if (asyncValue !== snapshot.value.async) {
+            ops.push({ op: 'set', path: ['async'], value: asyncValue })
+          }
+          for (const [kindName, field] of Object.entries(PROMPT_FIELD)) {
+            for (const suffix of ['Zh', 'En']) {
+              const key = `${field}${suffix}`
+              const text = String(drafts[key] ?? '')
+              if (text.trim() === '') {
+                ops.push({ op: 'unset', path: [key] })
+              } else if (text !== snapshot.value[key]) {
+                ops.push({ op: 'set', path: [key], value: text })
+              }
+            }
+          }
+        }
+        if (problem !== '') {
+          setNotice(problem)
+          return
+        }
+        if (ops.length === 0) {
+          setNotice('没有需要保存的修改')
+          return
+        }
+        setSaving(true)
+        try {
+          const ok = await save(ops, snapshot.revision)
+          if (ok) {
+            dirty.current = false
+            setNotice('已保存，下一轮压缩生效')
+          } else {
+            setNotice('Host 拒绝了这次修改；设置已重新读取')
+          }
+        } catch (error) {
+          setNotice(`保存失败：${String(error?.message ?? error)}`)
+        } finally {
+          setSaving(false)
+        }
+      }
+
+      if (snapshot.status !== 'ready' || snapshot.value === undefined) {
+        return h('section', { style: SS.section }, [
+          h('h2', { key: 'title', style: SS.title }, '记忆树压缩'),
+          h('p', { key: 'status', style: SS.intro },
+            snapshot.status === 'unavailable' ? '设置服务未启用，无法编辑。' : '正在读取设置…'),
+        ])
+      }
+
+      const promptField = `${PROMPT_FIELD[kind]}${language === 'en' ? 'En' : 'Zh'}`
+      const promptValue = drafts?.[promptField] ?? ''
+      const overridden = (field) => Object.prototype.hasOwnProperty.call(snapshot.user ?? {}, field)
+
+      return h('section', { style: SS.section }, [
+        h('h2', { key: 'title', style: SS.title }, '记忆树压缩'),
+        h('p', { key: 'intro', style: SS.intro },
+          '这里编辑的是下一次压缩会用的参数和提示词。数值留空会回到默认值；提示词留空会恢复内置模板。'),
+        h('div', { key: 'budget', style: SS.card }, [
+          h('h3', { key: 'head', style: SS.cardTitle }, '压缩预算'),
+          h('div', { key: 'grid', style: SS.grid },
+            SETTINGS_NUMBERS.map(([field, label, hint, min]) => h(NumberSetting, {
+              key: field,
+              field,
+              label,
+              hint,
+              text: drafts?.[field] ?? '',
+              overridden: overridden(field),
+              disabled: !snapshot.writable || saving,
+              onEdit: edit,
+              onReset: reset,
+            }))),
+          h('div', { key: 'row', style: { ...SS.row, marginTop: '10px' } }, [
+            h('label', { key: 'lang', style: SS.field }, [
+              h('span', { key: 'label', style: SS.label }, '压缩语言'),
+              h('select', {
+                key: 'select',
+                style: SS.input,
+                value: drafts?.language ?? 'zh',
+                disabled: !snapshot.writable || saving,
+                onChange: (event) => edit('language', event.target.value),
+              }, [
+                h('option', { key: 'zh', value: 'zh' }, '中文（zh）'),
+                h('option', { key: 'en', value: 'en' }, 'English（en）'),
+              ]),
+            ]),
+            h('label', { key: 'async', style: { ...SS.row, marginTop: '16px' } }, [
+              h('input', {
+                key: 'check',
+                type: 'checkbox',
+                checked: drafts?.async !== 'false',
+                disabled: !snapshot.writable || saving,
+                onChange: (event) => edit('async', event.target.checked ? 'true' : 'false'),
+              }),
+              h('span', { key: 'text', style: SS.label }, '后台异步压缩（不阻塞当前回合）'),
+            ]),
+          ]),
+        ]),
+        h('div', { key: 'prompt', style: SS.card }, [
+          h('h3', { key: 'head', style: SS.cardTitle }, '压缩提示词模板'),
+          h('div', { key: 'langRow', style: SS.row }, [
+            h('span', { key: 'label', style: SS.label }, '语言'),
+            ...['zh', 'en'].map(code => h('button', {
+              key: code,
+              type: 'button',
+              style: language === code ? SS.active : SS.button,
+              onClick: () => setLanguage(code),
+            }, code === 'zh' ? '中文' : 'English')),
+          ]),
+          h('div', { key: 'kindRow', style: { ...SS.row, marginTop: '8px' } },
+            PROMPT_KINDS.map(([name, label]) => h('button', {
+              key: name,
+              type: 'button',
+              style: kind === name ? SS.active : SS.button,
+              onClick: () => setKind(name),
+            }, label))),
+          h('div', { key: 'meta', style: { ...SS.row, marginTop: '10px' } }, [
+            h('span', { key: 'file', style: SS.hint },
+              `${PROMPT_FIELD[kind]}${language === 'en' ? 'En' : 'Zh'} · 占位符：${PROMPT_PLACEHOLDERS[kind]}`),
+            overridden(promptField)
+              ? h('button', {
+                key: 'resetPrompt',
+                type: 'button',
+                style: SS.button,
+                disabled: !snapshot.writable || saving,
+                onClick: () => reset(promptField),
+              }, '恢复默认模板')
+              : null,
+          ]),
+          h('textarea', {
+            key: 'textarea',
+            style: { ...SS.textarea, marginTop: '6px' },
+            value: promptValue,
+            disabled: !snapshot.writable || saving,
+            spellCheck: false,
+            onChange: (event) => edit(promptField, event.target.value),
+          }),
+          h('p', { key: 'hint', style: SS.hint },
+            '占位符必须保留；Host 会按当前参数渲染。模板里没有的字段可以不写，但 JSON 形状模板不建议删键。'),
+        ]),
+        h('div', { key: 'actions', style: { ...SS.row, marginTop: '12px' } }, [
+          h('button', { key: 'save', type: 'button', style: SS.primary, disabled: !snapshot.writable || saving, onClick: () => { void persist() } },
+            saving ? '保存中…' : '保存'),
+          h('button', { key: 'discard', type: 'button', style: SS.button, disabled: saving, onClick: discard }, '放弃修改'),
+          notice === ''
+            ? null
+            : h('span', { key: 'notice', style: SS.note }, notice),
+        ]),
+      ])
+    }
+
+    /**
+     * The shipped transcript's "load earlier" button. It has no data attribute,
+     * so identify it by its label and its `_older` row class.
+     */
+    function isLoadEarlierButton(button) {
+      const text = String(button?.textContent ?? '').trim()
+      if (text === '') return false
+      const parentClass = String(button.parentElement?.className ?? '')
+      if (/加载更早/.test(text) || /^load earlier/i.test(text)) return true
+      return /older/i.test(parentClass) && /加载中|loading/i.test(text)
+    }
+
+    /**
+     * Ambient status pill below the composer: polls the Host's in-memory job
+     * snapshot so a background compaction is visible while it runs. It also
+     * reveals the oldest memory card on session open: the transcript starts on
+     * the newest page, so the card can sit behind "load earlier". The button is
+     * hidden immediately and clicked programmatically until the card is in the
+     * DOM; there is no user-visible pager.
+     */
+    function MemoryTreeStatus({ sessionId }) {
+      const [job, setJob] = react.useState(null)
+      const [last, setLast] = react.useState(null)
+      const [live, setLive] = react.useState(null)
+
+      react.useEffect(() => {
+        if (sessionId === undefined || sessionId === null || sessionId === '') return undefined
+        let alive = true
+        let clicks = 0
+        let revealed = false
+        const hidden = new Map()
+        const hide = (button) => {
+          const box = button.parentElement
+          if (box === null || box === undefined) return
+          if (!hidden.has(box)) hidden.set(box, box.style.display)
+          box.style.display = 'none'
+        }
+        const tick = () => {
+          if (!alive) return
+          const pager = [...document.querySelectorAll('button')].filter(isLoadEarlierButton)
+          for (const button of pager) hide(button)
+          const card = document.querySelector('[data-memtree-card]')
+          if (card !== null) {
+            if (!revealed) {
+              revealed = true
+              setTimeout(() => {
+                if (alive) card.scrollIntoView({ block: 'start' })
+              }, 80)
+            }
+            return
+          }
+          if (clicks >= 40) return
+          const button = pager.find(candidate => candidate.disabled !== true)
+          if (button === undefined) return
+          clicks += 1
+          button.click()
+        }
+        tick()
+        const observer = new MutationObserver(tick)
+        observer.observe(document.body, { childList: true, subtree: true })
+        const timer = setInterval(tick, 700)
+        return () => {
+          alive = false
+          observer.disconnect()
+          clearInterval(timer)
+          for (const [box, display] of hidden) box.style.display = display
+        }
+      }, [sessionId])
+
+      react.useEffect(() => {
+        if (sessionId === undefined || sessionId === null || sessionId === '') return undefined
+        let alive = true
+        const tick = async () => {
+          try {
+            const query = new URLSearchParams({ session: String(sessionId) })
+            const token = new URLSearchParams(location.search).get('token')
+            if (token !== null && token !== '') query.set('token', token)
+            const response = await fetch(`/memory-tree/status?${query.toString()}`, { cache: 'no-store' })
+            if (!response.ok) return
+            const data = await response.json()
+            if (alive) {
+              setJob(Array.isArray(data?.jobs) ? data.jobs[0] ?? null : null)
+              setLast(data?.last ?? null)
+              setLive(data?.live ?? null)
+            }
+          } catch {
+            // The badge is a convenience; a route miss must stay silent.
+          }
+        }
+        void tick()
+        const timer = setInterval(() => { void tick() }, 1000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [sessionId])
+
+      const phase = String(job?.phase ?? '')
+      if (job === null || phase === 'skipped') {
+        const summary = last ?? live
+        if (summary === null) return null
+        const tokens = Number(summary.checkpointTokens ?? summary.summaryTokens) || 0
+        return h('div', { style: SS.status, 'data-memtree-status': 'summary' },
+          `记忆树摘要 ${shortTokens(tokens)} token`)
+      }
+      if (phase === 'queued' || phase === 'summarizing' || phase === 'merging') {
+        return h('div', { style: SS.status, 'data-memtree-status': phase },
+          `记忆树压缩中 · ${String(job.progress ?? '准备分片')}`)
+      }
+      if (phase === 'waiting-idle' || phase === 'committing') {
+        return h('div', { style: SS.status, 'data-memtree-status': phase },
+          `记忆树 · ${phase === 'committing' ? '写入记忆卡片' : String(job.progress ?? '等待空闲提交')}`)
+      }
+      if (phase === 'done') {
+        return h('div', { style: SS.status, 'data-memtree-status': 'done' },
+          `记忆树 · 压缩完成，释放约 ${shortTokens(job.shadowed)} token`)
+      }
+      if (phase === 'failed') {
+        return h('div', { style: { ...SS.status, color: 'var(--dsw-alias-state-error-primary, #b91c1c)' }, 'data-memtree-status': 'failed' },
+          `记忆树 · 压缩失败${job.error ? `：${String(job.error)}` : ''}`)
+      }
+      return null
+    }
+
+    /**
+     * Take over the compaction row.
+     *
+     * The breadcrumb is deliberate: whether this ever runs is the one question a
+     * missing card raises, and the browser console is the only place it can be
+     * answered after the fact. Registration failures are contained — the shipped
+     * row stays.
+     * @param {object} ctx client root context.
+     * @returns {void}
+     */
+    function apply(ctx) {
+      try {
+        console.info(`[memtree] client module loaded (build ${BUILD})`)
+
+        /**
+         * Which entries currently occupy the compaction cell, winner first.
+         *
+         * Exposed on `window.__memtree` and printed once after registration, so
+         * "the renderer never ran" can be answered from the page: either this
+         * entry is the elected winner (and the transcript holds no compaction
+         * node to draw), or it is not (and the election is the problem).
+         * @returns {object[]} one row per entry.
+         */
+        const seats = () => {
+          try {
+            const entries = ctx.slots.entriesOfSlot?.('conversation.chat.node') ?? []
+            return entries.map((entry) => {
+              const options = entry?.options ?? entry ?? {}
+              return { key: options.key, priority: options.priority, name: options.name }
+            }).filter(row => row.key === 'compaction')
+          } catch (error) {
+            return [{ error: String(error) }]
+          }
+        }
+        try {
+          window.__memtree = { build: BUILD, seats }
+        } catch {
+          // A frozen page global is not worth failing the registration over.
+        }
+
+        ctx.slots.inject('conversation.chat.node', () => {
+          console.info('[memtree] seat declared, taking over `compaction` at priority -1')
+          try {
+            const dispose = ctx.slots.register({
+              name: 'conversation.chat.node',
+              key: 'compaction',
+              // A keyed seat rejects a same-priority entry outright:
+              // `keyed slot "conversation.chat.node" already has an entry for key
+              // "compaction" at priority 0 — register at a different priority to
+              // shadow it (lowest renders)`. The shipped row sits at 0, so -1 is
+              // what shadows it (subagent uses -10 the same way).
+              priority: -1,
+            }, MemoryTreeCard)
+            queueMicrotask(() => {
+              const rows = seats()
+              console.info('[memtree] compaction cell now holds:', JSON.stringify(rows))
+              if (rows.length > 0 && rows[0]?.priority !== -1) {
+                console.warn('[memtree] this build is NOT the winner of the cell:', JSON.stringify(rows[0]))
+              }
+            })
+            return dispose
+          } catch (error) {
+            // Contained: the shipped row stays and the reason is visible.
+            console.error('[memtree] could not shadow the compaction row:', error)
+            return () => {}
+          }
+        })
+
+        // Ambient background-compaction progress, below the composer.
+        ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
+          name: 'conversation.composer.dock',
+          id: 'memory-tree-status',
+          order: 30,
+        }, MemoryTreeStatus))
+
+        // Settings section: the Host exposes this plugin's Config schema as the
+        // `memory-tree` namespace; `configForms` is the browser's form channel.
+        const configForms = typeof ctx.get === 'function' ? ctx.get('configForms') : undefined
+        if (configForms !== undefined) {
+          try {
+            const controller = createSettingsController(configForms.get(SETTINGS_NS))
+            ctx.effect(() => () => controller.dispose(), 'memtree: settings form')
+            ctx.slots.inject('settings.section', () => ctx.slots.register({
+              name: 'settings.section',
+              id: 'memory-tree',
+              order: 55,
+              label: '记忆树',
+              inject: () => ({
+                hooks: { memoryTreeSettings: controller.store },
+                save: controller.save,
+                resetField: controller.reset,
+              }),
+            }, MemoryTreeSettings))
+          } catch (error) {
+            // Settings are additive: a broken page must not take the card down.
+            console.error('[memtree] could not mount the settings section:', error)
+          }
+        }
+      } catch (error) {
+        console.error('[memtree] failed to take over the compaction seat:', error)
+      }
+    }
+
+    exports.apply = apply
+    exports.inject = inject
+    // Exposed for the offline bundle test; the app never reads them.
+    exports.__build = BUILD
+    exports.__parseSummary = parseSummary
+    exports.__foldSiblings = foldSiblings
+    exports.__foldBeforeKeys = foldBeforeKeys
+    return module.exports
+  },
+})

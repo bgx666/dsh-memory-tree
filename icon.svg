@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Memory tree">
+  <rect width="64" height="64" rx="14" fill="#eef4fb"/>
+  <path d="M32 52V30M32 38H19V28M32 33H45V23" fill="none" stroke="#2563eb" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="32" cy="52" r="5" fill="#2563eb"/>
+  <circle cx="19" cy="24" r="5" fill="#2563eb"/>
+  <circle cx="45" cy="19" r="5" fill="#2563eb"/>
+  <circle cx="32" cy="38" r="3" fill="#93b4e8"/>
+</svg>

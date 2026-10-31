@@ -1,0 +1,1 @@
+- **Length budget**: keep the whole node under ~{chars} characters (summary ~{summary}, all other fields ~{rest}) — a ceiling, not a target: write less when there is less, never pad.

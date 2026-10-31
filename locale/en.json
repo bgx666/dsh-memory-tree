@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Memory tree compaction",
+    "description": "Compacts context into a hierarchical memory tree, shows the compressed region as a card, and drills back to the original messages."
+  }
+}

@@ -1,0 +1,5 @@
+- **Your previous output for this same input was truncated** (the JSON never closed). This time **make the JSON valid first**:
+  - keep `summary` within roughly {summary} characters;
+  - omit any field you have nothing solid for instead of padding it;
+  - keep the whole node under about {chars} characters.
+- Do not restate source details; a later compaction pass will merge these nodes anyway. **Short but valid beats complete but broken.**

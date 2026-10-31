@@ -1,0 +1,10 @@
+# Memory-tree: wrap whichever compaction backend this deployment mounts, so
+# every compaction — automatic pressure, overflow recovery, or `/compact` —
+# grows the tree instead of writing one flat prose summary.
+#
+# Deliberately does NOT disable `compaction-basic`: this plugin is a wrapper,
+# not a second provider, so the backend stays the single owner of `ctx.compaction`
+# (and of the session lock, tool pairing, and surface replacement).
+- insert:
+    - id: memory-tree
+      name: '@xiaob/dsh-memory-tree'
