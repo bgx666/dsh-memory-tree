@@ -7,6 +7,18 @@
 `D:\xiaob\src\xiaob\memory\sqlite_memory_tree.py` —— 那是 xiaob 游戏里的旧拷贝，
 它把整片原文内联进指令、按条数触发、节点无预算，和现在的 planner 不是一回事。
 
+## 安装
+
+要求 DeepSeek Harness `>=0.2.1-rc.3 <0.3.0`。插件管理器支持从 GitHub 安装 bundle，
+target 填：
+
+```text
+github:bgx666/dsh-memory-tree
+```
+
+安装后启用 `memory-tree` 行并重启 DSH。源码安装 / 本地开发见
+[装在哪里](#装在哪里改完代码最容易踩的坑)。
+
 ## 一句话原理
 
 压缩不是"另存一份摘要"，而是**把上下文里的原始消息换成节点消息**。节点消息长这样：
