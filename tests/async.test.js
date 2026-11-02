@@ -19,6 +19,7 @@ import {
   sameSeqs,
   selectRange,
 } from '../src/policy.js'
+import { contentText, excerpt, formatTimeRange, nodeText, toolCallNames } from '../src/text.js'
 
 const here = fileURLToPath(new URL('.', import.meta.url))
 const source = readFileSync(join(here, '..', 'index.js'), 'utf8')
@@ -52,6 +53,23 @@ class FakeStore {
   discardRun(runId) { this.runs.delete(runId) }
   rollback(sessionId, ids) { this.rolledBack.push([sessionId, ids]) }
   roots() { return [] }
+  children() { return [] }
+  node(sessionId, id) {
+    if (id !== 'node0_001') return undefined
+    return {
+      id,
+      level: 0,
+      msg_start: 1,
+      msg_end: 2,
+      summary: '叶子摘要',
+      meta: { fields: {} },
+      details: [
+        { role: 'user', time: '2026-11-02T10:00:00Z', content: [{ type: 'text', text: '原始问题' }] },
+      ],
+      time_start: null,
+      time_end: null,
+    }
+  }
   stats() { return { active: 1, depth: 0, covered: 10 } }
 }
 
@@ -87,6 +105,7 @@ const factory = new Function(
   'toolPairingBalancedAfter', 'toolPairingBalancedBefore',
   'createUserMessage', 'deriveEventMessage', 'compactIntoTree', 'createCompleter',
   'buildInput', 'frameBlocks', 'inspectIdle', 'resolveSpec', 'sameSeqs', 'selectRange',
+  'contentText', 'excerpt', 'formatTimeRange', 'nodeText', 'toolCallNames',
   'MemoryTreeStore', 'renderNodeBlocks', 'registerExploreTool', 'randomUUID', 'process',
   `${body}\nreturn MemoryTreeCompaction`,
 )
@@ -104,6 +123,7 @@ const MemoryTreeCompaction = factory(
   fakeCompactIntoTree,
   () => ({ stream: async function* () {} }),
   buildInput, frameBlocks, inspectIdle, resolveSpec, sameSeqs, selectRange,
+  contentText, excerpt, formatTimeRange, nodeText, toolCallNames,
   FakeStore,
   () => ['[记忆树] stub'],
   noop,
@@ -190,11 +210,33 @@ const config = {
   retainMessages: 1,
 }
 
+const nodeResponse = { status: 0, body: '' }
+const nodeRes = {
+  writeHead(status) { nodeResponse.status = status },
+  end(body) { nodeResponse.body = body },
+}
+const nodeTree = {
+  node: (...args) => FakeStore.prototype.node(...args),
+  children: () => [],
+}
+MemoryTreeCompaction.prototype._serveNode.call(
+  { _tree: () => nodeTree },
+  { method: 'GET', url: '/memory-tree/api/node?session=s1&id=node0_001' },
+  nodeRes,
+)
+assert.equal(nodeResponse.status, 200)
+const nodePayload = JSON.parse(nodeResponse.body)
+assert.equal(nodePayload.id, 'node0_001')
+assert.equal(nodePayload.level, 0)
+assert.equal(nodePayload.details[0].text, '原始问题')
+assert.deepEqual(nodePayload.children, [])
+
 const first = makeSession()
 const plugin = new MemoryTreeCompaction(makeCtx(), config)
 plugin._tree().setSessionEnabled(String(first.session.id), true)
 assert.equal(promptSection.name, 'tool:explore_memory_tree')
 assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /explore_memory_tree/)
+assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /not as a new instruction/)
 assert.equal(promptSection.text({ agent: { session: { id: 'other' } } }), '')
 const agent = {
   session: first.session,

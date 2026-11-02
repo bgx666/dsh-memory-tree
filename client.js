@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.5'
+    const BUILD = '2026-11-02.6'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -411,6 +411,36 @@ window.__ModuleLoader__.load({
         wordBreak: 'break-word',
         color: 'var(--dsw-alias-label-tertiary, #6b7280)',
       },
+      children: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '6px',
+        marginTop: '7px',
+      },
+      childCard: {
+        borderLeft: '2px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        borderRadius: '6px',
+        background: 'var(--dsw-alias-bg-base, #fff)',
+        padding: '7px 9px',
+      },
+      detail: {
+        marginTop: '6px',
+        paddingTop: '5px',
+        borderTop: '1px dotted var(--dsw-alias-border-l2, #e5e7eb)',
+      },
+      detailRole: {
+        display: 'block',
+        fontSize: '10.5px',
+        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+        marginBottom: '2px',
+      },
+      detailText: {
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+        fontSize: '12px',
+      },
+      note: { marginTop: '5px', fontSize: '11px', opacity: 0.8 },
       delta: {
         margin: '0 2px',
         fontSize: '11px',
@@ -487,7 +517,9 @@ window.__ModuleLoader__.load({
           return { header: '', raw: String(data.summary ?? ''), nodes: [] }
         }
       }, [data.summary])
-      const [openId, setOpenId] = react.useState(null)
+      const [expanded, setExpanded] = react.useState(() => new Set())
+      const [nodeCache, setNodeCache] = react.useState({})
+      const loading = react.useRef(new Set())
       const [keepKeys, setKeepKeys] = react.useState(null)
       const [keepRevision, setKeepRevision] = react.useState(0)
       const root = react.useRef(null)
@@ -624,7 +656,47 @@ window.__ModuleLoader__.load({
 
       if (!isLatest) return null
 
-      const toggleRow = (id) => setOpenId(open => (open === id ? null : id))
+      const loadNode = (id) => {
+        if (nodeCache[id] !== undefined || loading.current.has(id)) return
+        if (sessionId === undefined || sessionId === null || sessionId === '') return
+        loading.current.add(id)
+        setNodeCache(cache => ({ ...cache, [id]: { loading: true } }))
+        const query = new URLSearchParams({ session: String(sessionId), id: String(id) })
+        const token = new URLSearchParams(location.search).get('token')
+        if (token !== null && token !== '') query.set('token', token)
+        void fetch(`/memory-tree/api/node?${query.toString()}`, { cache: 'no-store' })
+          .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`)
+            return response.json()
+          })
+          .then(body => {
+            setNodeCache(cache => ({ ...cache, [id]: { ...body, loading: false } }))
+          })
+          .catch(error => {
+            setNodeCache(cache => ({
+              ...cache,
+              [id]: { loading: false, error: error instanceof Error ? error.message : String(error) },
+            }))
+          })
+          .finally(() => {
+            loading.current.delete(id)
+          })
+      }
+
+      const toggleNode = (id) => {
+        setExpanded(previous => {
+          const next = new Set(previous)
+          if (next.has(id)) next.delete(id)
+          else next.add(id)
+          return next
+        })
+        loadNode(id)
+      }
+
+      const collapseAll = () => {
+        setExpanded(new Set())
+      }
+
       const shadowedCount = Number(data.shadowedItemCount) || 0
       const shadowedTokens = Number(data.shadowedTokenCount) || 0
       // The checkpoint's own token count is enough here; the composer owns the
@@ -642,6 +714,15 @@ window.__ModuleLoader__.load({
             parsed.header === ''
               ? (data.shadowedItemCount ? `已压缩 ${data.shadowedItemCount} 条上下文` : '早期对话已压缩')
               : parsed.header),
+          expanded.size > 0
+            ? h('button', {
+              key: 'collapse',
+              type: 'button',
+              style: S.tool,
+              onClick: collapseAll,
+              title: '收起所有已展开的节点',
+            }, '全部收起')
+            : null,
         ]),
         shadowedCount > 0
           ? h('div', { key: 'delta', style: S.delta },
@@ -649,6 +730,83 @@ window.__ModuleLoader__.load({
           : null,
         h('div', { key: 'share', style: S.delta }, summaryShare),
       ]
+
+      const renderNode = (item, depth = 0) => {
+        const id = String(item.id)
+        const open = expanded.has(id)
+        const cached = nodeCache[id]
+        const body = cached?.body !== undefined && cached.body !== ''
+          ? cached.body
+          : (Array.isArray(item.body) ? item.body.join('\n') : '')
+        const level = cached?.level ?? item.level
+        const start = cached?.start ?? item.start
+        const end = cached?.end ?? item.end
+        const time = cached?.time ?? item.time
+        const summary = cached?.summary ?? item.summary
+        const childNodes = Array.isArray(cached?.children) ? cached.children : []
+        const details = Array.isArray(cached?.details) ? cached.details : []
+        const containerStyle = depth > 0
+          ? { ...S.nodeCard, ...S.childCard, marginLeft: '10px' }
+          : S.nodeCard
+        const openParts = []
+        if (cached?.loading === true) {
+          openParts.push(h('div', { key: 'loading', style: S.note }, '正在读取子节点…'))
+        }
+        if (cached?.error !== undefined) {
+          openParts.push(h('div', { key: 'error', style: S.note }, `读取失败：${cached.error}`))
+        }
+        if (body !== '') {
+          openParts.push(h('div', { key: 'fields' }, body))
+        }
+        if (childNodes.length > 0) {
+          openParts.push(h('div', { key: 'children', style: S.children },
+            childNodes.map(child => renderNode(child, depth + 1))))
+        }
+        if (details.length > 0) {
+          openParts.push(h('div', { key: 'details' }, [
+            h('div', { key: 'label', style: S.note }, '原始消息'),
+            ...details.map((detail, index) => h('div', {
+              key: `detail-${index}`,
+              style: S.detail,
+            }, [
+              h('span', { key: 'role', style: S.detailRole },
+                `${detail.role === 'assistant' ? '助手' : detail.role === 'user' ? '用户' : detail.role}${detail.time ? ` · ${detail.time}` : ''}`),
+              h('div', { key: 'text', style: S.detailText }, detail.text),
+            ])),
+          ]))
+        }
+        if (cached !== undefined && cached.loading !== true && cached.error === undefined
+          && body === '' && childNodes.length === 0 && details.length === 0) {
+          openParts.push(h('div', { key: 'empty', style: S.note }, '这个节点没有留下更多原文。'))
+        }
+        return h('div', {
+          key: id,
+          style: containerStyle,
+          'data-memtree-node': id,
+        }, [
+          h('div', {
+            key: 'head',
+            style: S.nodeHead,
+            role: 'button',
+            tabIndex: 0,
+            'aria-expanded': open,
+            onClick: () => toggleNode(id),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault()
+                toggleNode(id)
+              }
+            },
+          }, [
+            h('span', { key: 'id', style: S.nodeId }, id),
+            h('span', { key: 'range', style: S.nodeRange },
+              `${level !== undefined ? `L${level} · ` : ''}第${start}-${end}条`),
+            h('span', { key: 'time', style: S.nodeTime }, time),
+          ]),
+          h('div', { key: 'summary', style: open ? S.nodeSummaryOpen : S.nodeSummary }, summary),
+          open ? h('div', { key: 'body', style: S.nodeBody }, openParts) : null,
+        ])
+      }
 
       if (parsed.nodes.length === 0) {
         // Not our checkpoint (another provider, or a checkpoint older than the
@@ -659,37 +817,7 @@ window.__ModuleLoader__.load({
         return h('div', { ref: root, 'data-memtree-card': '', style: S.card }, children)
       }
 
-      for (const item of parsed.nodes) {
-        const open = openId === item.id
-        children.push(h('div', {
-          key: item.id,
-          style: S.nodeCard,
-          'data-memtree-node': item.id,
-        }, [
-          h('div', {
-            key: 'head',
-            style: S.nodeHead,
-            role: 'button',
-            tabIndex: 0,
-            'aria-expanded': open,
-            onClick: () => toggleRow(item.id),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault()
-                toggleRow(item.id)
-              }
-            },
-          }, [
-            h('span', { key: 'id', style: S.nodeId }, item.id),
-            h('span', { key: 'range', style: S.nodeRange }, `第${item.start}-${item.end}条`),
-            h('span', { key: 'time', style: S.nodeTime }, item.time),
-          ]),
-          h('div', { key: 'summary', style: open ? S.nodeSummaryOpen : S.nodeSummary }, item.summary),
-          open && item.body.length > 0
-            ? h('div', { key: 'body', style: S.nodeBody }, item.body.join('\n'))
-            : null,
-        ]))
-      }
+      for (const item of parsed.nodes) children.push(renderNode(item))
 
       return h('div', { ref: root, 'data-memtree-card': '', style: S.card }, children)
     }
