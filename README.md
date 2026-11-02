@@ -291,6 +291,8 @@ DOM 不合预期就一行都不动，卸载时一定还原 —— 宁可退回�
 `meta.fields` 存七个结构化字段、`time_start/time_end` 存时间范围。
 `keeps` 存每个 checkpoint 实际保留的 Chat 行 key，供重启后恢复折叠边界。
 `session_prefs` 存每个会话的记忆树开关，默认关闭。
+`runs` 记录后台压缩的提交状态；进程在提交 checkpoint 之前中断时，下次打开数据库会删除
+该 run 写出的节点，不会让未完成的摘要进入上下文。
 
-旧版本建的库缺 `meta/time_start/time_end` 三列，打开时用 `ALTER TABLE` 补上，
+旧版本建的库缺 `meta/time_start/time_end/run_id` 等列，打开时用 `ALTER TABLE` 补上，
 已有行照旧渲染（只是没有字段行）。`npm run schema` 可以直接看当前状态。

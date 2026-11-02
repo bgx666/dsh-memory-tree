@@ -34,10 +34,14 @@ class FakeStore {
   constructor() {
     this.rolledBack = []
     this.prefs = new Map()
+    this.runs = new Set()
     lastStore = this
   }
   sessionEnabled(sessionId) { return this.prefs.get(sessionId) === true }
   setSessionEnabled(sessionId, enabled) { this.prefs.set(sessionId, enabled === true) }
+  beginRun() { const runId = `run-${this.runs.size + 1}`; this.runs.add(runId); return runId }
+  commitRun(runId) { this.runs.delete(runId) }
+  discardRun(runId) { this.runs.delete(runId) }
   rollback(sessionId, ids) { this.rolledBack.push([sessionId, ids]) }
   roots() { return [] }
   stats() { return { active: 1, depth: 0, covered: 10 } }

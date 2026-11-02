@@ -784,9 +784,10 @@ export default class MemoryTreeCompaction {
    */
   _rollback(job) {
     const ids = Array.isArray(job?.created) ? job.created : []
-    if (ids.length === 0 || typeof job?.sessionId !== 'string') return
+    if (typeof job?.sessionId !== 'string') return
     try {
-      this._tree().rollback(job.sessionId, ids)
+      if (ids.length > 0) this._tree().rollback(job.sessionId, ids)
+      if (typeof job.runId === 'string') this._tree().discardRun(job.runId)
       record('async-rollback', `session=${job.sessionId}\tnodes=${ids.length}`)
     } catch (error) {
       record('asyncfail', `stage=rollback\terror=${reasonText(error).slice(0, 200)}`)
@@ -1107,6 +1108,7 @@ export default class MemoryTreeCompaction {
       ?? { provider: header.config.provider, model: header.config.model }
     job.phase = 'summarizing'
     job.progress = '准备分片'
+    job.runId = this._tree().beginRun(job.sessionId)
     const result = await this._summarize(agent, input, signal, route, job.created, 'async', job)
     if (signal.aborted) {
       if (!job.committed) this._rollback(job)
@@ -1142,6 +1144,7 @@ export default class MemoryTreeCompaction {
       blocks: result.blocks,
       route,
       created: job.created,
+      runId: job.runId,
       signal,
       job,
     }
@@ -1239,6 +1242,10 @@ export default class MemoryTreeCompaction {
       throw new Error('background compaction: another compaction transaction is active')
     }
 
+    // Mark the run before the checkpoint pair lands. If the process dies between
+    // the two stores, an unreachable orphan node set is less harmful than a
+    // checkpoint that points at nodes a startup cleanup already deleted.
+    if (typeof prepared.runId === 'string') this._tree().commitRun(prepared.runId)
     const compactionId = CompactionId(randomUUID())
     const lifecycle = { compactionId, turn: null }
     let opened = false
@@ -1368,6 +1375,7 @@ export default class MemoryTreeCompaction {
         record(kind, `session=${session}\tmode=${mode}\t${detail}`)
       },
       onNodeId: (id) => created.push(id),
+      runId: job?.runId,
     })
     const stats = this._tree().stats(session)
     record('compact', `session=${session}\tmode=${mode}`

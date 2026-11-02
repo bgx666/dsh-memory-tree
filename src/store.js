@@ -11,6 +11,7 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 
 const SCHEMA = `
@@ -29,12 +30,19 @@ CREATE TABLE IF NOT EXISTS nodes (
   meta       TEXT,
   time_start TEXT,
   time_end   TEXT,
+  run_id     TEXT,
   PRIMARY KEY (session_id, id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_nodes_dedupe
   ON nodes(session_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_nodes_active ON nodes(session_id, level, is_active);
 CREATE INDEX IF NOT EXISTS ix_nodes_parent ON nodes(session_id, parent_id);
+CREATE TABLE IF NOT EXISTS runs (
+  run_id     TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  committed  INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 CREATE TABLE IF NOT EXISTS keeps (
   session_id TEXT NOT NULL,
   checkpoint INTEGER NOT NULL,
@@ -134,7 +142,9 @@ export class MemoryTreeStore {
     db.exec('PRAGMA synchronous = NORMAL')
     db.exec(SCHEMA)
     this.#migrate(db)
+    db.exec('CREATE INDEX IF NOT EXISTS ix_nodes_run ON nodes(run_id)')
     this.#db = db
+    this.#recoverRuns(db)
     return db
   }
 
@@ -150,9 +160,34 @@ export class MemoryTreeStore {
   #migrate(db) {
     const existing = new Set(db.prepare('PRAGMA table_info(nodes)').all()
       .map(column => String(column['name'])))
-    for (const [column, type] of [['meta', 'TEXT'], ['time_start', 'TEXT'], ['time_end', 'TEXT']]) {
+    for (const [column, type] of [
+      ['meta', 'TEXT'], ['time_start', 'TEXT'], ['time_end', 'TEXT'], ['run_id', 'TEXT'],
+    ]) {
       if (!existing.has(column)) db.exec(`ALTER TABLE nodes ADD COLUMN ${column} ${type}`)
     }
+  }
+
+  /**
+   * Remove nodes written by a background run whose checkpoint never landed.
+   *
+   * Node rows are written before the session checkpoint (the checkpoint has to
+   * reference them), so a hard restart can leave complete orphans behind. Their
+   * run row is still `committed = 0`; the next open deletes those nodes. The
+   * session log is untouched, so the current context is unaffected.
+   * @param {import('node:sqlite').DatabaseSync} db open handle.
+   * @returns {void}
+   */
+  #recoverRuns(db) {
+    const stale = db.prepare('SELECT run_id FROM runs WHERE committed = 0').all()
+    if (stale.length === 0) return
+    transaction(db, () => {
+      const removeNodes = db.prepare('DELETE FROM nodes WHERE run_id = ?')
+      const removeRun = db.prepare('DELETE FROM runs WHERE run_id = ?')
+      for (const row of stale) {
+        removeNodes.run(row['run_id'])
+        removeRun.run(row['run_id'])
+      }
+    })
   }
 
   /** Release the SQLite handle. */
@@ -202,6 +237,44 @@ export class MemoryTreeStore {
     return this.#nextOrdinal(sessionId)
   }
 
+  /**
+   * Open a durable run marker before a background pass writes nodes.
+   * @param {string} sessionId owning session.
+   * @returns {string} run id attached to every node the pass writes.
+   */
+  beginRun(sessionId) {
+    const runId = randomUUID()
+    this.#open()
+      .prepare('INSERT INTO runs (run_id, session_id, committed) VALUES (?, ?, 0)')
+      .run(runId, sessionId)
+    return runId
+  }
+
+  /**
+   * Mark a run's nodes as covered by a checkpoint.
+   * @param {string} runId run returned by {@link beginRun}.
+   * @returns {void}
+   */
+  commitRun(runId) {
+    this.#open()
+      .prepare('UPDATE runs SET committed = 1 WHERE run_id = ?')
+      .run(runId)
+  }
+
+  /**
+   * Delete a failed or cancelled run's nodes and its marker.
+   * @param {string} runId run returned by {@link beginRun}.
+   * @returns {void}
+   */
+  discardRun(runId) {
+    if (typeof runId !== 'string' || runId === '') return
+    const db = this.#open()
+    transaction(db, () => {
+      db.prepare('DELETE FROM nodes WHERE run_id = ?').run(runId)
+      db.prepare('DELETE FROM runs WHERE run_id = ?').run(runId)
+    })
+  }
+
   /** Whether a leaf with this dedupe key already exists. */
   hasLeaf(sessionId, dedupeKey) {
     const row = this.#open()
@@ -220,19 +293,20 @@ export class MemoryTreeStore {
    * @param {number} leaf.count how many messages it covers.
    * @param {string} [leaf.dedupeKey] content hash, unique per session.
    * @param {[string, string] | null} [leaf.timeRange] start/end timestamps.
+   * @param {string} [leaf.runId] background run marker.
    * @returns {string} the new id.
    */
-  addLeaf({ sessionId, summary, details, meta, count, dedupeKey, timeRange }) {
+  addLeaf({ sessionId, summary, details, meta, count, dedupeKey, timeRange, runId }) {
     const id = this.#nextId(sessionId, 0)
     const start = this.#nextOrdinal(sessionId)
     const [timeStart, timeEnd] = Array.isArray(timeRange) ? timeRange : [null, null]
     this.#open()
       .prepare(`INSERT INTO nodes
-        (session_id, id, level, summary, msg_start, msg_end, dedupe_key, details, meta, time_start, time_end)
-        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (session_id, id, level, summary, msg_start, msg_end, dedupe_key, details, meta, time_start, time_end, run_id)
+        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(sessionId, id, summary, start, start + Math.max(0, count - 1),
         dedupeKey ?? null, JSON.stringify(details ?? []), JSON.stringify(meta ?? {}),
-        timeStart, timeEnd)
+        timeStart, timeEnd, runId ?? null)
     return id
   }
 
@@ -243,9 +317,10 @@ export class MemoryTreeStore {
    * @param {string[]} merge.childIds nodes to merge, oldest first.
    * @param {string} merge.summary the parent's text.
    * @param {object} [merge.meta] parent `{schema_version, fields}` payload.
+   * @param {string} [merge.runId] background run marker.
    * @returns {string} the parent id.
    */
-  merge({ sessionId, childIds, summary, meta }) {
+  merge({ sessionId, childIds, summary, meta, runId }) {
     if (childIds.length === 0) throw new Error('merge: childIds must not be empty')
     const db = this.#open()
     return transaction(db, () => {
@@ -262,10 +337,10 @@ export class MemoryTreeStore {
       const starts = rows.map(row => row['time_start']).filter(value => typeof value === 'string' && value !== '')
       const ends = rows.map(row => row['time_end']).filter(value => typeof value === 'string' && value !== '')
       db.prepare(`INSERT INTO nodes
-        (session_id, id, level, summary, msg_start, msg_end, meta, time_start, time_end)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (session_id, id, level, summary, msg_start, msg_end, meta, time_start, time_end, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(sessionId, parentId, level, summary, start, end,
-          JSON.stringify(meta ?? {}), starts[0] ?? null, ends[ends.length - 1] ?? null)
+          JSON.stringify(meta ?? {}), starts[0] ?? null, ends[ends.length - 1] ?? null, runId ?? null)
       const detach = db.prepare('UPDATE nodes SET parent_id = ?, is_active = 0 WHERE session_id = ? AND id = ?')
       for (const childId of childIds) detach.run(parentId, sessionId, childId)
       return parentId

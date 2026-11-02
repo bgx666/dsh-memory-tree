@@ -160,7 +160,7 @@ async function requestNode({ complete, messages, limits, language, signal }) {
  *   region messages that were actually folded (a chunk cap can leave a tail).
  */
 export async function compactIntoTree({
-  store, limits, input, agent, signal, complete, sessionId, language = 'zh', onEvent, times, onNodeId,
+  store, limits, input, agent, signal, complete, sessionId, language = 'zh', onEvent, times, onNodeId, runId,
 }) {
   const partition = String(sessionId ?? agent?.session?.id ?? 'unknown')
   const messages = Array.isArray(input?.messages) ? input.messages : []
@@ -232,6 +232,7 @@ export async function compactIntoTree({
         count: chunk.length,
         dedupeKey: null,
         timeRange: timeRangeOf(chunk, times),
+        runId,
       })
       created.push(leafId)
       onNodeId?.(leafId)
@@ -244,7 +245,7 @@ export async function compactIntoTree({
   }
 
   const merges = await mergeUp({
-    store, limits, partition, head, complete, signal, language, cwd, onEvent, created, onNodeId,
+    store, limits, partition, head, complete, signal, language, cwd, onEvent, created, onNodeId, runId,
   })
 
   const stats = store.stats(partition)
@@ -362,7 +363,9 @@ function mechanicalNode(chunk) {
  * span had not reached yet.
  * @returns {Promise<number>} parents created.
  */
-async function mergeUp({ store, limits, partition, head, complete, signal, language, cwd, onEvent, created, onNodeId }) {
+async function mergeUp({
+  store, limits, partition, head, complete, signal, language, cwd, onEvent, created, onNodeId, runId,
+}) {
   let merges = 0
   let batches = 0
   for (let level = 0; batches < limits.maxMerges;) {
@@ -405,6 +408,7 @@ async function mergeUp({ store, limits, partition, head, complete, signal, langu
       childIds: [...targetIds],
       summary: node.summary,
       meta: { schema_version: SCHEMA_VERSION, fields },
+      runId,
     })
     created.push(parentId)
     onNodeId?.(parentId)
