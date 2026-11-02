@@ -1,9 +1,9 @@
 {
   "name": "@xiaob/dsh-memory-tree",
-  "version": "0.4.17",
+  "version": "0.4.18",
   "private": false,
   "type": "module",
-  "description": "Hierarchical memory-tree compaction provider for DeepSeek Harness",
+  "description": "Hierarchical memory-tree compaction provider for DeepSeek Harness (in development; may be unstable)",
   "license": "MIT",
   "author": "bgx666",
   "repository": {
