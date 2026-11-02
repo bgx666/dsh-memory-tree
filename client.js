@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-03.1'
+    const BUILD = '2026-11-03.2'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -248,6 +248,71 @@ window.__ModuleLoader__.load({
       return count
     }
 
+    /**
+     * Earliest turn still inside the retained context.
+     *
+     * The rail is built from the whole session log, so turns that were paged
+     * out of the DOM have no row to fold and every earlier mark would jump
+     * outside the context. The earliest retained Chat key is the real boundary:
+     * marks below its turn are outside the checkpoint and must disappear.
+     * @param {readonly string[]} keys retained Chat row keys.
+     * @param {readonly object[]} rows mounted Chat rows.
+     * @returns {number | null} first retained turn, or null when unknown.
+     */
+    function retainedTurnCutoff(keys, rows) {
+      const wanted = new Set((Array.isArray(keys) ? keys : []).map(String))
+      if (wanted.size === 0) return null
+      let cutoff = null
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const key = String(row.getAttribute?.('data-chat-node-key') ?? '')
+        if (!wanted.has(key)) continue
+        const turn = Number(row.getAttribute?.('data-chat-turn'))
+        if (!Number.isSafeInteger(turn)) continue
+        if (cutoff === null || turn < cutoff) cutoff = turn
+      }
+      return cutoff
+    }
+
+    /**
+     * Turn boundary of the current context after the checkpoint row has moved
+     * to the top. Every row after the card is current context; rows before it
+     * are folded, including ones no longer mounted. This is the DOM-level
+     * boundary, so it also covers turns whose retained row was not loaded.
+     * @param {object | null} row checkpoint row.
+     * @param {readonly object[]} rows mounted Chat rows.
+     * @returns {{cutoffTurn: number | null, hideAll: boolean} | null} boundary.
+     */
+    function contextTurnCutoff(row, rows) {
+      const list = Array.isArray(rows) ? rows : []
+      const index = row === null || row === undefined ? -1 : list.indexOf(row)
+      if (index < 0) return null
+      // The card is physically moved to the top, so folded rows now sit *after*
+      // it in DOM order. They are still old history and must not lower the
+      // boundary; only currently visible rows count as the retained context.
+      const parent = row.parentElement
+      const hiddenByFold = (candidate) => {
+        for (let cursor = candidate; cursor !== null && cursor !== undefined
+          && cursor !== parent; cursor = cursor.parentElement) {
+          if (folded.has(cursor) || cursor.style?.display === 'none') return true
+        }
+        return false
+      }
+      const current = list.slice(index + 1).filter(candidate => !hiddenByFold(candidate))
+      let cutoffTurn = null
+      let hasUserRow = false
+      for (const candidate of current) {
+        const key = String(candidate.getAttribute?.('data-chat-node-key') ?? '')
+        // Rail marks are user prompts only; an assistant/tool row left in the
+        // tail must not keep an older prompt's mark alive.
+        if (!key.startsWith('13:input-message') && !key.startsWith('8:steering')) continue
+        hasUserRow = true
+        const turn = Number(candidate.getAttribute?.('data-chat-turn'))
+        if (!Number.isSafeInteger(turn)) continue
+        if (cutoffTurn === null || turn < cutoffTurn) cutoffTurn = turn
+      }
+      return { cutoffTurn, hideAll: !hasUserRow }
+    }
+
     /** Restore every row this card hid, including rows nested in groups. */
     function restoreFolded() {
       for (const [element, display] of folded) {
@@ -273,8 +338,12 @@ window.__ModuleLoader__.load({
      * marks, so paging still works.
      * @returns {void}
      */
-    function filterTurnRail() {
+    function filterTurnRail(options = {}) {
       if (typeof document === 'undefined') return
+      const cutoffTurn = Number.isSafeInteger(options.cutoffTurn)
+        ? options.cutoffTurn
+        : null
+      const hideAll = options.hideAll === true
       let rows
       try {
         rows = [...document.querySelectorAll('[data-chat-node-key]')]
@@ -323,7 +392,9 @@ window.__ModuleLoader__.load({
           const number = label.match(/(\d+)(?!.*\d)/)
           if (number === null) continue
           const turn = Number(number[1])
-          const hide = foldedAway.has(turn) && !visible.has(turn)
+          const hide = hideAll
+            || (cutoffTurn !== null && turn < cutoffTurn)
+            || (foldedAway.has(turn) && !visible.has(turn))
           if (hide) {
             if (!railHidden.has(button)) {
               railHidden.set(button, button.style.visibility)
@@ -696,12 +767,24 @@ window.__ModuleLoader__.load({
           // row itself and let the observer restore that after every re-render.
           let scheduled = 0
           let railScheduled = 0
+          let railTimer = 0
           let disposed = false
           const scheduleRail = () => {
             if (disposed || railScheduled !== 0) return
             railScheduled = setTimeout(() => {
               railScheduled = 0
-              if (!disposed) filterTurnRail()
+              if (disposed) return
+              let rows = []
+              try {
+                rows = [...parent.querySelectorAll('[data-chat-node-key]')]
+              } catch {
+                // A virtualized transcript can detach between checks.
+              }
+              const context = contextTurnCutoff(row, rows)
+              filterTurnRail(context ?? {
+                cutoffTurn: retainedTurnCutoff(keepKeys, rows),
+                hideAll: keepKeys.length === 0,
+              })
             }, 80)
           }
           const apply = () => {
@@ -729,11 +812,16 @@ window.__ModuleLoader__.load({
           // Only direct row inserts/removals matter; observing the whole subtree
           // made every streaming token re-scan the transcript.
           observer.observe(parent, { childList: true })
+          // The rail virtualizes marks as it scrolls, so new buttons can appear
+          // without any transcript mutation; re-check periodically while the
+          // card is mounted to keep the pre-checkpoint marks hidden.
+          railTimer = setInterval(scheduleRail, 500)
           return () => {
             disposed = true
             observer.disconnect()
             if (scheduled !== 0) clearTimeout(scheduled)
             if (railScheduled !== 0) clearTimeout(railScheduled)
+            if (railTimer !== 0) clearInterval(railTimer)
             restoreFolded()
             restoreTurnRail()
             if (originalNext !== null && originalNext.parentElement === parent) {
@@ -1698,6 +1786,9 @@ window.__ModuleLoader__.load({
     exports.__parseSummary = parseSummary
     exports.__foldSiblings = foldSiblings
     exports.__foldBeforeKeys = foldBeforeKeys
+    exports.__retainedTurnCutoff = retainedTurnCutoff
+    exports.__contextTurnCutoff = contextTurnCutoff
+    exports.__filterTurnRail = filterTurnRail
     exports.__collectDescendants = collectDescendants
     return module.exports
   },

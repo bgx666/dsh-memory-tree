@@ -162,13 +162,15 @@ assert.equal(rows[0].style.display, '')
 
 // Retained rows are found by their real Chat keys. The fold starts before the
 // oldest retained row; it is not a fixed count.
-function fakeKeyRow(name, key) {
+function fakeKeyRow(name, key, turn = null) {
   return {
     name,
     style: { display: '' },
     parentElement: null,
     hasAttribute: attr => attr === 'data-chat-node-key',
-    getAttribute: attr => attr === 'data-chat-node-key' ? key : null,
+    getAttribute: attr => attr === 'data-chat-node-key'
+      ? key
+      : attr === 'data-chat-turn' ? turn : null,
     contains() { return false },
     querySelector() { return null },
   }
@@ -177,11 +179,11 @@ const keyContainer = {
   querySelectorAll: () => keyRows,
 }
 const keyRows = [
-  fakeKeyRow('old-1', '13:input-messageold'),
-  fakeKeyRow('old-2', '9:tool-callold'),
-  fakeKeyRow('card', '10:compactionc'),
-  fakeKeyRow('kept-1', '13:input-messagekept'),
-  fakeKeyRow('kept-2', '14:assistant-step7:2'),
+  fakeKeyRow('old-1', '13:input-messageold', 1),
+  fakeKeyRow('old-2', '9:tool-callold', 2),
+  fakeKeyRow('card', '10:compactionc', 6),
+  fakeKeyRow('kept-1', '13:input-messagekept', 7),
+  fakeKeyRow('kept-2', '14:assistant-step7:2', 9),
 ]
 for (const [index, row] of keyRows.entries()) {
   row.parentElement = keyContainer
@@ -194,6 +196,59 @@ assert.equal(keyRows[1].style.display, 'none')
 assert.equal(keyRows[2].style.display, '', 'the checkpoint card itself must stay visible')
 assert.equal(keyRows[3].style.display, '')
 assert.equal(keyRows[4].style.display, '')
+assert.equal(module.__retainedTurnCutoff(
+  ['13:input-messagekept', '14:assistant-step7:2'],
+  [fakeKeyRow('old', '13:input-messageold', 2), ...keyRows.slice(3)],
+), 7)
+assert.deepEqual(module.__contextTurnCutoff(keyRows[2], keyRows), {
+  cutoffTurn: 7,
+  hideAll: false,
+})
+const hiddenOld = fakeKeyRow('hidden-old', '13:input-messageold', 1)
+hiddenOld.style.display = 'none'
+assert.deepEqual(module.__contextTurnCutoff(
+  keyRows[2], [keyRows[2], hiddenOld, keyRows[3], keyRows[4]],
+), { cutoffTurn: 7, hideAll: false })
+const hiddenGroup = { style: { display: 'none' }, parentElement: keyContainer }
+const nestedOld = fakeKeyRow('nested-old', '13:input-messageold', 1)
+nestedOld.parentElement = hiddenGroup
+assert.deepEqual(module.__contextTurnCutoff(
+  keyRows[2], [keyRows[2], nestedOld, keyRows[3], keyRows[4]],
+), { cutoffTurn: 7, hideAll: false })
+assert.deepEqual(module.__contextTurnCutoff(keyRows[2], [keyRows[2]]), {
+  cutoffTurn: null,
+  hideAll: true,
+})
+assert.deepEqual(module.__contextTurnCutoff(
+  keyRows[2], [keyRows[2], keyRows[4]],
+), { cutoffTurn: null, hideAll: true })
+assert.equal(module.__contextTurnCutoff(keyRows[2], [keyRows[0]]), null)
+
+// The whole-log rail includes turns whose rows were paged out. A cutoff hides
+// every mark below the oldest retained turn even when no row exists to fold.
+const railButtons = [4, 5, 6].map(turn => ({
+  style: { visibility: '' },
+  getAttribute: attr => attr === 'aria-label' ? `第 ${turn} 轮` : null,
+}))
+const railNav = {
+  getAttribute: attr => attr === 'aria-label' ? '轮次导航' : null,
+  querySelectorAll: selector => selector === 'button[data-index]' ? railButtons : [],
+}
+const previousDocument = globalThis.document
+globalThis.document = {
+  querySelectorAll(selector) {
+    if (selector === '[data-chat-node-key]') return []
+    if (selector === 'nav') return [railNav]
+    return []
+  },
+}
+module.__filterTurnRail({ cutoffTurn: 5 })
+assert.equal(railButtons[0].style.visibility, 'hidden')
+assert.equal(railButtons[1].style.visibility, '')
+assert.equal(railButtons[2].style.visibility, '')
+module.__filterTurnRail({ cutoffTurn: 0 })
+globalThis.document = previousDocument
+
 module.__foldSiblings(keyAnchor, false)
 
 const earlierCard = [fakeRow('r1'), fakeRow('older-card', true), fakeRow('r3'), fakeRow('card')]
