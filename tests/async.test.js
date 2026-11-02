@@ -244,6 +244,14 @@ assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /序号�
 assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /按消息范围从旧到新排列/)
 assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /绝对不要模仿 node 的说话方式和文风/)
 assert.equal(promptSection.text({ agent: { session: { id: 'other' } } }), '')
+
+const custom = new MemoryTreeCompaction(makeCtx(), {
+  ...config,
+  promptSystem: 'CUSTOM SYSTEM PROMPT',
+})
+custom._tree().setSessionEnabled('s1', true)
+assert.equal(promptSection.text({ agent: { session: { id: 's1' } } }), 'CUSTOM SYSTEM PROMPT')
+
 const agent = {
   session: first.session,
   whenIdle: async () => {},

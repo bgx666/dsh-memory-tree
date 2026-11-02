@@ -101,6 +101,7 @@ function promptDefault(name) {
  * an empty box; clearing a field restores that default.
  */
 export const Config = z.object({
+  promptSystem: z.string().default(MEMORY_TREE_PROMPT).volatile(),
   chunkTokens: z.number().step(1).min(1).default(30000).volatile(),
   maxChunks: z.number().step(1).min(1).default(12).volatile(),
   nodeBudget: z.number().step(1).min(200).default(1000).volatile(),
@@ -341,6 +342,13 @@ function readLimits(config = {}) {
   limits.retainMessages = configCount(config['retainMessages'],
     envCount('DSH_MEMORY_TREE_RETAIN_MESSAGES', 30))
   limits.language = configText(config['language']) === 'en' ? 'en' : 'zh'
+  // The system-prompt section is user-editable. An empty value restores the
+  // shipped text, matching how the compression templates handle blank fields.
+  const configuredPrompt = typeof config['promptSystem'] === 'string'
+    && config['promptSystem'].trim() !== ''
+    ? config['promptSystem']
+    : MEMORY_TREE_PROMPT
+  limits.systemPrompt = configuredPrompt
   // Background compression is the default. `sync` is the escape hatch for
   // one-off debugging: it restores the backend's blocking behavior.
   limits.sync = config['async'] === false
@@ -630,7 +638,9 @@ export default class MemoryTreeCompaction {
             const agent = context?.agent
             const sessionId = String(agent?.session?.id ?? '')
             if (sessionId === '') return ''
-            return this._sessionEnabled(sessionId) ? MEMORY_TREE_PROMPT : ''
+            return this._sessionEnabled(sessionId)
+              ? String(this._limits.systemPrompt ?? MEMORY_TREE_PROMPT)
+              : ''
           },
         }), 'memtree: prompt rule')
       } catch (error) {

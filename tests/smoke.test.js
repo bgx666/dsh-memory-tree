@@ -162,12 +162,23 @@ await test('a second compaction treats the prior digest as background, not fresh
   assert.equal(first.leaves, 1)
   const prior = store.roots(sessionId)[0]
   const checkpointText = renderNodeBlocks({ roots: [prior], stats: store.stats(sessionId) }).join('\n')
+  const checkpointMessage = checkpoint(checkpointText)
+  const livePrefix = [
+    message('system', '你是小助。'),
+    checkpointMessage,
+    ...freshMessages(2).slice(1),
+  ]
+  const calls = []
+  const answer = stubComplete('第二段摘要')
   const second = await compactIntoTree({
     store,
     limits: { chunkTokens: 30000, maxChunks: 12, nodeBudget: 1000, mergeThreshold: 8, branch: 4, maxMerges: 8 },
-    input: { messages: [message('system', '你是小助。'), checkpoint(checkpointText), ...freshMessages(2).slice(1)] },
+    input: { messages: livePrefix },
     agent: { session: { id: sessionId } },
-    complete: stubComplete('第二段摘要'),
+    complete: async (request) => {
+      calls.push(request.messages)
+      return answer(request)
+    },
     sessionId,
   })
   assert.equal(second.leaves, 1)
@@ -175,6 +186,11 @@ await test('a second compaction treats the prior digest as background, not fresh
   assert.equal(roots.length, 2)
   assert.equal(roots[0].id, prior.id)
   assert.ok(roots[1].msg_start > prior.msg_end, 'the new leaf must start after the covered range')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][1], checkpointMessage,
+    'the live checkpoint message must be replayed verbatim, not re-rendered from the tree')
+  assert.deepEqual(calls[0].slice(0, livePrefix.length), livePrefix,
+    'the request prefix must match the live conversation before the compression instruction')
   store.close()
 })
 

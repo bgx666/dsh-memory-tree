@@ -7,6 +7,9 @@
  *   1. split the batch into ~30k-token chunks, cutting on turn boundaries;
  *   2. chunk k is sent with chunks 1..k-1 in front of it (progressive prefix),
  *      so each call extends the previous one and the provider cache still hits;
+ *      when a checkpoint is already in the surface, that exact message is kept
+ *      in front of the fresh chunks instead of re-rendering the tree nodes, so
+ *      the live conversation prefix can hit the provider cache too;
  *   3. the instruction only *names* the range — head/tail anchor quotes — the
  *      text itself travels as real messages, never spliced into the prompt;
  *   4. answers are JSON (summary + task/decisions/lessons/context/user), clipped
@@ -183,10 +186,15 @@ export async function compactIntoTree({
     const chunks = splitByTokens(fresh, limits.chunkTokens, limits.maxChunks)
     onEvent?.('start', `fresh=${fresh.length}\tchunks=${chunks.length}`)
     const base = store.nextOrdinal(partition)
-    // Snapshot before the run: the nodes of this run's own chunks are already
-    // replayed as raw prefix messages, and repeating them as summary lines would
-    // put the same span into the prompt twice.
-    const folded = store.roots(partition).map(row => textMessage('user', nodeText(row)))
+    // Keep the checkpoint message exactly as the live context has it. Re-rendering
+    // the roots here would make the compression request start with a different
+    // prefix (one message vs. many), so the provider could not reuse the live
+    // conversation cache. A missing checkpoint falls back to the tree rows; the
+    // first compaction has no nodes yet anyway.
+    const checkpoint = checkpointAt >= 0 ? region[checkpointAt] : undefined
+    const background = checkpoint === undefined
+      ? store.roots(partition).map(row => textMessage('user', nodeText(row)))
+      : [checkpoint]
     const offsets = []
     let total = 0
     for (const chunk of chunks) {
@@ -212,7 +220,7 @@ export async function compactIntoTree({
         : { head: '', tail: '' }
       const request = [
         ...(head === undefined ? [] : [head]),
-        ...folded,
+        ...background,
         ...prefix,
         textMessage('user', leafInstruction({
           start, end, anchor, anchorEnd, limits, language, cwd,

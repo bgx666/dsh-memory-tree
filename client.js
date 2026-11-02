@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.9'
+    const BUILD = '2026-11-03.1'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -999,6 +999,7 @@ window.__ModuleLoader__.load({
       ...SETTINGS_NUMBERS.map(([field]) => field),
       'language',
       'async',
+      'promptSystem',
       ...PROMPT_KINDS.flatMap(([kind]) => [`${PROMPT_FIELD[kind]}Zh`, `${PROMPT_FIELD[kind]}En`]),
     ]
 
@@ -1223,6 +1224,12 @@ window.__ModuleLoader__.load({
           if (asyncValue !== snapshot.value.async) {
             ops.push({ op: 'set', path: ['async'], value: asyncValue })
           }
+          const systemPrompt = String(drafts.promptSystem ?? '')
+          if (systemPrompt.trim() === '') {
+            ops.push({ op: 'unset', path: ['promptSystem'] })
+          } else if (systemPrompt !== snapshot.value.promptSystem) {
+            ops.push({ op: 'set', path: ['promptSystem'], value: systemPrompt })
+          }
           for (const [kindName, field] of Object.entries(PROMPT_FIELD)) {
             for (const suffix of ['Zh', 'En']) {
               const key = `${field}${suffix}`
@@ -1248,7 +1255,7 @@ window.__ModuleLoader__.load({
           const ok = await save(ops, snapshot.revision)
           if (ok) {
             dirty.current = false
-            setNotice('已保存，下一轮压缩生效')
+            setNotice('已保存，下一轮生效')
           } else {
             setNotice('Host 拒绝了这次修改；设置已重新读取')
           }
@@ -1274,7 +1281,7 @@ window.__ModuleLoader__.load({
       return h('section', { style: SS.section }, [
         h('h2', { key: 'title', style: SS.title }, '记忆树压缩'),
         h('p', { key: 'intro', style: SS.intro },
-          '这里编辑的是下一次压缩会用的参数和提示词。数值留空会回到默认值；提示词留空会恢复内置模板。'),
+          '这里编辑的是下一次压缩会用的参数和提示词。数值留空会回到默认值；提示词留空会恢复内置模板。系统提示词只影响启用了记忆树的会话。'),
         h('div', { key: 'budget', style: SS.card }, [
           h('h3', { key: 'head', style: SS.cardTitle }, '压缩预算'),
           h('div', { key: 'grid', style: SS.grid },
@@ -1314,6 +1321,32 @@ window.__ModuleLoader__.load({
               h('span', { key: 'text', style: SS.label }, '后台异步压缩（不阻塞当前回合）'),
             ]),
           ]),
+        ]),
+        h('div', { key: 'systemPrompt', style: SS.card }, [
+          h('h3', { key: 'head', style: SS.cardTitle }, '记忆树系统提示词'),
+          h('p', { key: 'hint', style: SS.hint },
+            '只注入到启用了记忆树的会话；留空会恢复内置提示词。'),
+          h('div', { key: 'meta', style: { ...SS.row, marginTop: '6px' } }, [
+            h('span', { key: 'count', style: SS.hint },
+              `${String(drafts?.promptSystem ?? '').length} 字符`),
+            overridden('promptSystem')
+              ? h('button', {
+                key: 'reset',
+                type: 'button',
+                style: SS.button,
+                disabled: !snapshot.writable || saving,
+                onClick: () => { void reset('promptSystem') },
+              }, '恢复默认')
+              : null,
+          ]),
+          h('textarea', {
+            key: 'textarea',
+            style: { ...SS.textarea, minHeight: '280px', marginTop: '6px' },
+            value: drafts?.promptSystem ?? '',
+            disabled: !snapshot.writable || saving,
+            spellCheck: false,
+            onChange: (event) => edit('promptSystem', event.target.value),
+          }),
         ]),
         h('div', { key: 'prompt', style: SS.card }, [
           h('h3', { key: 'head', style: SS.cardTitle }, '压缩提示词模板'),
