@@ -89,6 +89,23 @@ function decode(row) {
   return copy
 }
 
+/** Run one synchronous multi-statement write as an all-or-nothing transaction. */
+function transaction(db, action) {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const result = action()
+    db.exec('COMMIT')
+    return result
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK')
+    } catch {
+      // The failed statement already rolled the transaction back.
+    }
+    throw error
+  }
+}
+
 export class MemoryTreeStore {
   /** @type {import('node:sqlite').DatabaseSync | null} */
   #db = null
@@ -231,26 +248,28 @@ export class MemoryTreeStore {
   merge({ sessionId, childIds, summary, meta }) {
     if (childIds.length === 0) throw new Error('merge: childIds must not be empty')
     const db = this.#open()
-    const rows = childIds.map(childId => {
-      const row = db.prepare('SELECT level, msg_start, msg_end, time_start, time_end FROM nodes WHERE session_id = ? AND id = ?')
-        .get(sessionId, childId)
-      if (row === undefined) throw new Error(`merge: unknown node ${childId}`)
-      return row
+    return transaction(db, () => {
+      const rows = childIds.map(childId => {
+        const row = db.prepare('SELECT level, msg_start, msg_end, time_start, time_end FROM nodes WHERE session_id = ? AND id = ?')
+          .get(sessionId, childId)
+        if (row === undefined) throw new Error(`merge: unknown node ${childId}`)
+        return row
+      })
+      const level = Number(rows[0]['level']) + 1
+      const parentId = this.#nextId(sessionId, level)
+      const start = Math.min(...rows.map(row => Number(row['msg_start'])))
+      const end = Math.max(...rows.map(row => Number(row['msg_end'])))
+      const starts = rows.map(row => row['time_start']).filter(value => typeof value === 'string' && value !== '')
+      const ends = rows.map(row => row['time_end']).filter(value => typeof value === 'string' && value !== '')
+      db.prepare(`INSERT INTO nodes
+        (session_id, id, level, summary, msg_start, msg_end, meta, time_start, time_end)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(sessionId, parentId, level, summary, start, end,
+          JSON.stringify(meta ?? {}), starts[0] ?? null, ends[ends.length - 1] ?? null)
+      const detach = db.prepare('UPDATE nodes SET parent_id = ?, is_active = 0 WHERE session_id = ? AND id = ?')
+      for (const childId of childIds) detach.run(parentId, sessionId, childId)
+      return parentId
     })
-    const level = Number(rows[0]['level']) + 1
-    const parentId = this.#nextId(sessionId, level)
-    const start = Math.min(...rows.map(row => Number(row['msg_start'])))
-    const end = Math.max(...rows.map(row => Number(row['msg_end'])))
-    const starts = rows.map(row => row['time_start']).filter(value => typeof value === 'string' && value !== '')
-    const ends = rows.map(row => row['time_end']).filter(value => typeof value === 'string' && value !== '')
-    db.prepare(`INSERT INTO nodes
-      (session_id, id, level, summary, msg_start, msg_end, meta, time_start, time_end)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(sessionId, parentId, level, summary, start, end,
-        JSON.stringify(meta ?? {}), starts[0] ?? null, ends[ends.length - 1] ?? null)
-    const detach = db.prepare('UPDATE nodes SET parent_id = ?, is_active = 0 WHERE session_id = ? AND id = ?')
-    for (const childId of childIds) detach.run(parentId, sessionId, childId)
-    return parentId
   }
 
   /**
@@ -269,11 +288,13 @@ export class MemoryTreeStore {
     if (ids.length === 0) return
     const db = this.#open()
     const marks = ids.map(() => '?').join(',')
-    db.prepare(`UPDATE nodes SET parent_id = NULL, is_active = 1
-                WHERE session_id = ? AND parent_id IN (${marks})`)
-      .run(sessionId, ...ids)
-    db.prepare(`DELETE FROM nodes WHERE session_id = ? AND id IN (${marks})`)
-      .run(sessionId, ...ids)
+    transaction(db, () => {
+      db.prepare(`UPDATE nodes SET parent_id = NULL, is_active = 1
+                  WHERE session_id = ? AND parent_id IN (${marks})`)
+        .run(sessionId, ...ids)
+      db.prepare(`DELETE FROM nodes WHERE session_id = ? AND id IN (${marks})`)
+        .run(sessionId, ...ids)
+    })
   }
 
   /** Active nodes at one level, oldest first. */
