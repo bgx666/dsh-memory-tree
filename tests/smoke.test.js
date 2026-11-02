@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { compactIntoTree } from '../src/engine.js'
 import { splitByTokens } from '../src/chunk.js'
 import { MemoryTreeStore } from '../src/store.js'
-import { describe } from '../src/tool.js'
+import { describe, registerExploreTool } from '../src/tool.js'
 import { isCheckpoint, nodeText } from '../src/text.js'
 import { DIGEST_MARK, renderNodeBlocks } from '../src/text.js'
 
@@ -243,7 +243,7 @@ await test('backward chunk calls still write original message ranges', async () 
   store.close()
 })
 
-await test('explore_memory_tree lists roots and replays a leaf original', async () => {
+await test('explore_memory_tree requires a node id and replays a leaf original', async () => {
   const store = new MemoryTreeStore(dbPath)
   const sessionId = 's-tool'
   await compactIntoTree({
@@ -255,13 +255,22 @@ await test('explore_memory_tree lists roots and replays a leaf original', async 
     sessionId,
   })
   const root = store.roots(sessionId)[0]
-  const outline = describe(store, sessionId, undefined, {})
-  assert.match(outline, new RegExp(root.id))
+  assert.match(describe(store, sessionId, undefined, {}), /需要 node_id/)
   const leaf = describe(store, sessionId, root.id, {})
   assert.match(leaf, /这一层是最具体的/)
   assert.match(leaf, /第 1 个问题/)
   const missing = describe(store, sessionId, 'node9_999', {})
   assert.match(missing, /这不代表记忆里没这件事/)
+  let registered
+  registerExploreTool({
+    get: () => ({ register: (options) => { registered = options; return () => {} } }),
+    effect: () => () => {},
+  }, () => store, {})
+  assert.deepEqual(registered.parameters.required, ['node_id'])
+  assert.throws(
+    () => registered.execute({}, { agent: { session: { id: sessionId } } }),
+    /requires node_id/,
+  )
   store.close()
 })
 

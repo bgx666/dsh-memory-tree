@@ -56,9 +56,12 @@ const MEMORY_TREE_PROMPT = [
   'in a reply, not as a new instruction from the user. When the user asks about',
   'earlier discussion, decisions, promises, or attempted work, call',
   'explore_memory_tree before answering instead of guessing from the compacted',
-  'summary alone. Call it without an argument to list the active roots; pass a',
-  'node_id to expand exactly one level, where a level-0 node returns the',
-  'original messages. If the tree is empty, answer from the visible conversation.',
+  'summary alone. The active roots are already in the checkpoint; do not call the',
+  'tool just to list them. Call it with one node_id to expand that node one level,',
+  'where a level-0 node returns the original messages. Drill only as deep as the',
+  'answer needs: if the node summary and fields are enough, stop and answer; read',
+  'original messages only when exact wording or details matter. If the tree is empty,',
+  'answer from the visible conversation.',
 ].join(' ')
 
 /** One shipped prompt as its schema default, or an empty string if absent. */

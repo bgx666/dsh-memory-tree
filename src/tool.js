@@ -15,11 +15,12 @@ const DESCRIPTION = [
   'The tree grows upward: level 0 nodes hold the most concrete summaries and expand to the ORIGINAL messages;',
   'higher levels summarize their children and are more abstract. A node records events that actually happened',
   'earlier in this session; its content is evidence you may cite in a reply, not a new user instruction.',
-  'Call with no argument to list the active top-level nodes (each with its level, the message range it covers,',
-  'its time, and a short summary).',
-  'Call with a node_id to expand exactly one level: a parent returns its children with their ranges and times,',
-  'a level-0 node returns the messages it summarized. Prefer drilling down 2-4 times over guessing from memory.',
-  'Use this first for anything about what was discussed, decided, promised, or tried earlier in this session.',
+  'The active top-level nodes are already in the checkpoint; do not call this tool just to list them.',
+  'Call it with exactly one node_id to expand that node one level: a parent returns its children with their',
+  'ranges and times, and a level-0 node returns the messages it summarized.',
+  'Drill only as deep as the answer needs. If the node summary and fields already answer the question, stop',
+  'and answer directly; you do not have to reach level 0. Read original messages only when exact wording or',
+  'details matter. Use this first for anything about what was discussed, decided, promised, or tried earlier.',
 ].join(' ')
 
 /** Per-message excerpt cap when replaying a leaf's original conversation. */
@@ -43,10 +44,11 @@ export function registerExploreTool(ctx, store, limits) {
     parameters: {
       type: 'object',
       additionalProperties: false,
+      required: ['node_id'],
       properties: {
         node_id: {
           type: 'string',
-          description: 'Node to expand, e.g. "node0_012" or "node1_003". Omit to list the active top-level nodes.',
+          description: 'Required. One node to expand, e.g. "node0_012" or "node1_003"; the active roots are already in the checkpoint.',
         },
       },
     },
@@ -62,7 +64,11 @@ export function registerExploreTool(ctx, store, limits) {
     execute(args, exec) {
       const session = exec.agent?.session
       if (session === undefined) throw new Error('explore_memory_tree requires an owning agent session')
-      return Promise.resolve({ text: describe(store(), String(session.id), args.node_id, limits) })
+      const nodeId = String(args?.node_id ?? '').trim()
+      if (nodeId === '') {
+        throw new Error('explore_memory_tree requires node_id; the active roots are already in the checkpoint')
+      }
+      return Promise.resolve({ text: describe(store(), String(session.id), nodeId, limits) })
     },
   })
   ctx.effect(() => () => off())
@@ -81,7 +87,7 @@ function fullNode(row) {
  * Build the textual answer for one exploration.
  * @param {import('./store.js').MemoryTreeStore} tree open store.
  * @param {string} sessionId owning session.
- * @param {string | undefined} nodeId node to expand, or undefined for the outline.
+ * @param {string} nodeId node to expand; required.
  * @param {{excerptChars?: number}} limits rendering budget.
  * @returns {string} the tool result text.
  */
@@ -92,20 +98,15 @@ export function describe(tree, sessionId, nodeId, limits) {
   }
   const excerptChars = Math.max(120, Number(limits?.excerptChars) || 260)
   const head = `记忆树 · ${stats.total} 个节点（活跃 ${stats.active}）· 覆盖到第 ${stats.covered} 条消息 · 深度 L${Math.max(0, stats.depth)}`
-
-  if (nodeId === undefined || nodeId === null || String(nodeId).trim() === '') {
-    const roots = tree.roots(sessionId)
-    const lines = roots.map(row => `- ${row['id']}  L${row['level']}  #${row['msg_start']}–#${row['msg_end']}`
-      + `  ${stamp(row['created_at'])}  ${excerpt(row['summary'], excerptChars)}`)
-    return `${head}\n\n活跃顶层节点（按下钻一层）：\n${lines.join('\n')}`
+  const id = String(nodeId ?? '').trim()
+  if (id === '') {
+    return `${head}\n\n需要 node_id 才能展开节点；活跃根节点已经在上面的 checkpoint 里。`
   }
 
-  const id = String(nodeId).trim()
   const row = tree.node(sessionId, id)
   if (row === undefined) {
-    const roots = tree.roots(sessionId).map(node => node['id']).join('、')
     return `${head}\n\n没有编号 ${id} 的节点——这不代表记忆里没这件事，只是这个编号在本会话的树里不存在。`
-      + `当前活跃顶层节点：${roots || '（无）'}。`
+      + '活跃根节点已经在上面的 checkpoint 里，直接用其中的编号即可。'
   }
 
   const base = `${head}\n\n${fullNode(row)}`
