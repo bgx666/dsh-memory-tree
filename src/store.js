@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS keeps (
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   PRIMARY KEY (session_id, checkpoint)
 );
+CREATE TABLE IF NOT EXISTS session_prefs (
+  session_id TEXT PRIMARY KEY,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 `
 
 /** Resolve the Harness home the same way `resolveDshHome()` does. */
@@ -347,6 +352,34 @@ export class MemoryTreeStore {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Whether one session opted into memory-tree compaction. Unknown sessions
+   * default to enabled, so existing conversations keep working after upgrade.
+   * @param {string} sessionId owning session.
+   * @returns {boolean} true unless the session explicitly turned it off.
+   */
+  sessionEnabled(sessionId) {
+    const row = this.#open()
+      .prepare('SELECT enabled FROM session_prefs WHERE session_id = ?')
+      .get(sessionId)
+    return row === undefined || Number(row['enabled']) !== 0
+  }
+
+  /**
+   * Persist one session's memory-tree switch.
+   * @param {string} sessionId owning session.
+   * @param {boolean} enabled whether this session uses the memory tree.
+   * @returns {void}
+   */
+  setSessionEnabled(sessionId, enabled) {
+    this.#open()
+      .prepare(`INSERT INTO session_prefs (session_id, enabled, updated_at)
+                VALUES (?, ?, unixepoch())
+                ON CONFLICT(session_id) DO UPDATE SET
+                  enabled = excluded.enabled, updated_at = excluded.updated_at`)
+      .run(sessionId, enabled ? 1 : 0)
   }
 
   /** Tree statistics for one session. */

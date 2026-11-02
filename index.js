@@ -579,26 +579,69 @@ export default class MemoryTreeCompaction {
       ctx.logger?.warn?.(`memory-tree: explore_memory_tree registration failed: ${
         error instanceof Error ? error.message : String(error)}`)
     }
+    const ROUTE_CLEANUP = Symbol.for('@xiaob/dsh-memory-tree/route-cleanup')
     const registerStatus = (scope) => {
       try {
-        const web = scope?.webServer ?? scope?.get?.('webServer')
-        if (web?.register === undefined) return
-        scope.effect(() => () => web.register({
-          kind: 'exact',
-          path: '/memory-tree/status',
-          handler: (req, res) => this._serveStatus(req, res),
-        }), 'memtree: status route')
-        record('status-route', 'path=/memory-tree/status')
+        const web = scope?.get?.('webServer') ?? ctx.get?.('webServer')
+        if (web?.register === undefined) return false
+        // HMR can import this module again while the previous instance's exact
+        // routes are still mounted; remove those first.
+        const previous = globalThis[ROUTE_CLEANUP]
+        try {
+          if (typeof previous === 'function') previous()
+          else previous?.cleanup?.()
+        } catch {
+          // The previous cleanup already ran.
+        }
+        delete globalThis[ROUTE_CLEANUP]
+        const register = (path, handler) => {
+          try {
+            return web.register({ kind: 'exact', path, handler })
+          } catch (error) {
+            // A duplicate means an older instance already owns this path.
+            // Its handler resolves through `active`, so it is safe to keep.
+            if (/duplicate exact route/i.test(reasonText(error))) return null
+            throw error
+          }
+        }
+        const offStatus = register('/memory-tree/api/status',
+          (req, res) => (active ?? this)._serveStatus(req, res))
+        const offSession = register('/memory-tree/api/session',
+          (req, res) => (active ?? this)._serveSession(req, res))
+        const owner = Symbol('memory-tree-routes')
+        globalThis[ROUTE_CLEANUP] = {
+          owner,
+          cleanup: () => {
+            offStatus?.()
+            offSession?.()
+          },
+        }
+        ctx.effect(() => () => {
+          const current = globalThis[ROUTE_CLEANUP]
+          if (current?.owner !== owner) return
+          try {
+            current.cleanup()
+          } finally {
+            delete globalThis[ROUTE_CLEANUP]
+          }
+        }, 'memtree: routes')
+        record('status-route', 'path=/memory-tree/api/status,/memory-tree/api/session')
+        return true
       } catch (error) {
+        record('routefail', `error=${reasonText(error).slice(0, 200)}`)
         ctx.logger?.warn?.(`memory-tree: status route unavailable: ${reasonText(error)}`)
+        return false
       }
     }
-    if (typeof ctx.inject === 'function') {
-      // On a cold start this plugin may be constructed before the HTTP server;
-      // `inject` retries registration when `webServer` becomes available.
-      ctx.inject(['webServer'], registerStatus)
-    } else {
-      registerStatus(ctx)
+    if (!registerStatus(ctx)) {
+      // The HTTP server may mount after this plugin on a cold start. Retry
+      // briefly instead of depending on injection order.
+      record('route-wait', 'webServer not ready')
+      const timer = setInterval(() => {
+        if (registerStatus(ctx)) clearInterval(timer)
+      }, 500)
+      ctx.effect(() => () => clearInterval(timer), 'memtree: route retry')
+      timer.unref?.()
     }
     ctx.effect(() => () => {
       if (active === this) active = null
@@ -653,6 +696,20 @@ export default class MemoryTreeCompaction {
         // Settings is optional; compaction must still work without it.
       }
     })
+  }
+
+  /**
+   * Whether one session currently opts into memory-tree compaction. A store
+   * failure must not silently disable compaction, so it defaults to enabled.
+   * @param {string} sessionId owning session.
+   * @returns {boolean} the session's switch.
+   */
+  _sessionEnabled(sessionId) {
+    try {
+      return this._tree().sessionEnabled(sessionId)
+    } catch {
+      return true
+    }
   }
 
   /**
@@ -857,12 +914,63 @@ export default class MemoryTreeCompaction {
       last: session === '' ? null : this._last.get(session) ?? null,
       live,
       keep,
+      enabled: session === '' ? true : this._sessionEnabled(session),
     })
     res.writeHead(200, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
     })
     res.end(body)
+  }
+
+  /**
+   * Persist one session's memory-tree switch.
+   *
+   * Turning it off aborts a running background job; its catch path rolls the
+   * uncommitted nodes back. The next pressure trigger then falls through to the
+   * backend's ordinary compaction.
+   * @param {import('node:http').IncomingMessage} req request.
+   * @param {import('node:http').ServerResponse} res response.
+   * @returns {void}
+   */
+  _serveSession(req, res) {
+    let session = ''
+    try {
+      session = new URL(req.url ?? '/', 'http://localhost').searchParams.get('session') ?? ''
+    } catch {
+      session = ''
+    }
+    const fail = (status, text) => {
+      res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end(text)
+    }
+    if (req.method !== 'POST') return fail(405, 'method not allowed')
+    if (session === '') return fail(400, 'missing session')
+    let raw = ''
+    req.setEncoding?.('utf8')
+    req.on('data', (chunk) => {
+      raw += chunk
+      if (raw.length > 4096) req.destroy()
+    })
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(raw === '' ? '{}' : raw)
+        if (typeof data.enabled !== 'boolean') {
+          fail(400, 'enabled must be a boolean')
+          return
+        }
+        this._tree().setSessionEnabled(session, data.enabled)
+        if (!data.enabled) this._jobs.get(session)?.controller.abort()
+        record('session-switch', `session=${session}\tenabled=${String(data.enabled)}`)
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        res.end(JSON.stringify({ session, enabled: data.enabled }))
+      } catch (error) {
+        fail(400, `invalid request: ${reasonText(error).slice(0, 120)}`)
+      }
+    })
   }
 
   /**
@@ -883,6 +991,12 @@ export default class MemoryTreeCompaction {
     if (signal?.aborted === true) return false
     const sessionId = String(agent?.session?.id ?? '')
     if (sessionId === '') return false
+    // Off means "use the backend's ordinary compaction", not "never compact".
+    // Returning false lets the original compactIfNeeded run synchronously.
+    if (!this._sessionEnabled(sessionId)) {
+      record('session-off', `session=${sessionId}\tmode=async`)
+      return false
+    }
     this._agents.set(sessionId, agent)
     this._engines.set(sessionId, engine)
     if (this._jobs.has(sessionId)) return true
@@ -930,6 +1044,11 @@ export default class MemoryTreeCompaction {
   async _runBackground(engine, agent, job) {
     const session = agent.session
     const signal = job.controller.signal
+    if (!this._sessionEnabled(String(session.id))) {
+      job.phase = 'skipped'
+      job.progress = '本会话已关闭记忆树'
+      return
+    }
     const header = session.requestHeader()
     if (header === undefined || header === null) return
     const info = await engine.ctx.llm.resolveModelInfo(
@@ -1274,6 +1393,10 @@ export default class MemoryTreeCompaction {
       originalSummarize.call(receiver, chunkInput, chunkAgent, chunkSignal)
     if (process.env['DSH_MEMORY_TREE_DISABLED'] === '1') return callOriginal(input, agent, signal)
     const session = String(agent?.session?.id ?? 'unknown')
+    if (!this._sessionEnabled(session)) {
+      record('session-off', `session=${session}\tmode=sync`)
+      return callOriginal(input, agent, signal)
+    }
     const created = []
     try {
       const route = this._limits.summaryRoute ?? routeOf(agent)

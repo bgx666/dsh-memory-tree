@@ -61,6 +61,10 @@ github:bgx666/dsh-memory-tree
 
 ## 配置
 
+每个会话有一个独立开关：输入框下方的「本会话使用记忆树」复选框。
+关闭后只影响当前会话，下一次压缩回退到框架的普通摘要；已经生成的记忆节点和卡片不会删除，
+其他会话也不受影响。开关持久化在 `session_prefs` 表。
+
 打开 **设置 → 记忆树**，可以编辑：
 
 - 分片大小 `chunkTokens`、每轮分片数 `maxChunks`
@@ -281,6 +285,7 @@ DOM 不合预期就一行都不动，卸载时一定还原 —— 宁可退回�
 `nodes` 按 `session_id` 分区；`details` 存被压缩的原始消息、
 `meta.fields` 存七个结构化字段、`time_start/time_end` 存时间范围。
 `keeps` 存每个 checkpoint 实际保留的 Chat 行 key，供重启后恢复折叠边界。
+`session_prefs` 存每个会话的记忆树开关，默认开启。
 
 旧版本建的库缺 `meta/time_start/time_end` 三列，打开时用 `ALTER TABLE` 补上，
 已有行照旧渲染（只是没有字段行）。`npm run schema` 可以直接看当前状态。

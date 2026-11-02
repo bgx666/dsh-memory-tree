@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-10-31.23'
+    const BUILD = '2026-11-02.1'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -394,6 +394,7 @@ window.__ModuleLoader__.load({
       }, [data.summary])
       const [openId, setOpenId] = react.useState(null)
       const [keepKeys, setKeepKeys] = react.useState(null)
+      const [keepRevision, setKeepRevision] = react.useState(0)
       const root = react.useRef(null)
 
       // The card node carries the checkpoint seq but not the retained rows.
@@ -410,10 +411,14 @@ window.__ModuleLoader__.load({
         }
         const token = new URLSearchParams(location.search).get('token')
         if (token !== null && token !== '') query.set('token', token)
-        void fetch(`/memory-tree/status?${query.toString()}`, { cache: 'no-store' })
+        void fetch(`/memory-tree/api/status?${query.toString()}`, { cache: 'no-store' })
           .then(response => response.ok ? response.json() : null)
           .then(body => {
             if (!alive) return
+            if (body?.enabled === false) {
+              setKeepKeys(null)
+              return
+            }
             setKeepKeys(Array.isArray(body?.keep) ? body.keep.map(String) : null)
           })
           .catch(() => {
@@ -422,7 +427,24 @@ window.__ModuleLoader__.load({
             if (alive) setKeepKeys(null)
           })
         return () => { alive = false }
-      }, [isLatest, data.seq, sessionId])
+      }, [isLatest, data.seq, sessionId, keepRevision])
+
+      react.useEffect(() => {
+        if (!isLatest) return undefined
+        const onSessionSwitch = (event) => {
+          const detail = event?.detail
+          if (String(detail?.sessionId ?? '') !== String(sessionId ?? '')) return
+          if (detail.enabled === false) {
+            setKeepKeys(null)
+          } else {
+            // Re-read the persisted boundary when the session is switched back
+            // on; a stale page does not need a reload to restore the card.
+            setKeepRevision(value => value + 1)
+          }
+        }
+        window.addEventListener('memtree-session-changed', onSessionSwitch)
+        return () => window.removeEventListener('memtree-session-changed', onSessionSwitch)
+      }, [isLatest, sessionId])
 
       // Folding lives in an effect because it touches siblings React does not
       // own. Re-running on every child mutation keeps it correct when the
@@ -437,21 +459,36 @@ window.__ModuleLoader__.load({
           { nodeKeys: Object.keys(node ?? {}), dataKeys: Object.keys(data ?? {}) })
         try {
           const row = rowOf(self)
-          const originalOrder = row?.style.order ?? ''
-          if (row !== null && row !== undefined) row.style.order = '-1'
+          const parent = row?.parentElement
+          if (row === null || row === undefined || parent === null || parent === undefined) {
+            return undefined
+          }
+          const originalNext = row.nextSibling
+          const originalOrder = row.style.order ?? ''
+          row.style.order = ''
+          // The checkpoint anchor is newer than the retained messages, so DOM
+          // order puts the card after them. `order: -1` depends on the transcript
+          // being a flex/grid container and did not move it in practice; move the
+          // row itself and let the observer restore that after every re-render.
           const apply = () => {
             if (keepKeys.length === 0) foldSiblings(self, true)
             else foldBeforeKeys(self, keepKeys)
+            if (parent.firstElementChild !== row) {
+              parent.insertBefore(row, parent.firstElementChild)
+            }
           }
           apply()
-          const parent = row?.parentElement
-          if (parent === null || parent === undefined) return undefined
           const observer = new MutationObserver(apply)
           observer.observe(parent, { childList: true, subtree: true })
           return () => {
             observer.disconnect()
             restoreFolded()
-            if (row !== null && row !== undefined) row.style.order = originalOrder
+            if (originalNext !== null && originalNext.parentElement === parent) {
+              parent.insertBefore(row, originalNext)
+            } else if (row.parentElement !== parent) {
+              parent.appendChild(row)
+            }
+            row.style.order = originalOrder
           }
         } catch (error) {
           // Hiding rows is a bonus: if the DOM is not what this expects, the card
@@ -978,6 +1015,8 @@ window.__ModuleLoader__.load({
       const [job, setJob] = react.useState(null)
       const [last, setLast] = react.useState(null)
       const [live, setLive] = react.useState(null)
+      const [enabled, setEnabled] = react.useState(true)
+      const [busy, setBusy] = react.useState(false)
 
       react.useEffect(() => {
         if (sessionId === undefined || sessionId === null || sessionId === '') return undefined
@@ -1031,13 +1070,14 @@ window.__ModuleLoader__.load({
             const query = new URLSearchParams({ session: String(sessionId) })
             const token = new URLSearchParams(location.search).get('token')
             if (token !== null && token !== '') query.set('token', token)
-            const response = await fetch(`/memory-tree/status?${query.toString()}`, { cache: 'no-store' })
+            const response = await fetch(`/memory-tree/api/status?${query.toString()}`, { cache: 'no-store' })
             if (!response.ok) return
             const data = await response.json()
             if (alive) {
               setJob(Array.isArray(data?.jobs) ? data.jobs[0] ?? null : null)
               setLast(data?.last ?? null)
               setLive(data?.live ?? null)
+              setEnabled(data?.enabled !== false)
             }
           } catch {
             // The badge is a convenience; a route miss must stay silent.
@@ -1051,31 +1091,77 @@ window.__ModuleLoader__.load({
         }
       }, [sessionId])
 
+      const toggle = async (event) => {
+        const next = event.target.checked === true
+        setEnabled(next)
+        setBusy(true)
+        try {
+          const query = new URLSearchParams({ session: String(sessionId) })
+          const token = new URLSearchParams(location.search).get('token')
+          if (token !== null && token !== '') query.set('token', token)
+          const response = await fetch(`/memory-tree/api/session?${query.toString()}`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ enabled: next }),
+          })
+          if (!response.ok) throw new Error(String(response.status))
+          window.dispatchEvent(new CustomEvent('memtree-session-changed', {
+            detail: { sessionId: String(sessionId), enabled: next },
+          }))
+        } catch {
+          setEnabled(!next)
+        } finally {
+          setBusy(false)
+        }
+      }
+
       const phase = String(job?.phase ?? '')
+      let badge = null
       if (job === null || phase === 'skipped') {
         const summary = last ?? live
-        if (summary === null) return null
-        const tokens = Number(summary.checkpointTokens ?? summary.summaryTokens) || 0
-        return h('div', { style: SS.status, 'data-memtree-status': 'summary' },
-          `记忆树摘要 ${shortTokens(tokens)} token`)
-      }
-      if (phase === 'queued' || phase === 'summarizing' || phase === 'merging') {
-        return h('div', { style: SS.status, 'data-memtree-status': phase },
+        if (summary !== null) {
+          const tokens = Number(summary.checkpointTokens ?? summary.summaryTokens) || 0
+          badge = h('span', { style: SS.status, 'data-memtree-status': 'summary' },
+            `记忆树摘要 ${shortTokens(tokens)} token`)
+        }
+      } else if (phase === 'queued' || phase === 'summarizing' || phase === 'merging') {
+        badge = h('span', { style: SS.status, 'data-memtree-status': phase },
           `记忆树压缩中 · ${String(job.progress ?? '准备分片')}`)
-      }
-      if (phase === 'waiting-idle' || phase === 'committing') {
-        return h('div', { style: SS.status, 'data-memtree-status': phase },
+      } else if (phase === 'waiting-idle' || phase === 'committing') {
+        badge = h('span', { style: SS.status, 'data-memtree-status': phase },
           `记忆树 · ${phase === 'committing' ? '写入记忆卡片' : String(job.progress ?? '等待空闲提交')}`)
-      }
-      if (phase === 'done') {
-        return h('div', { style: SS.status, 'data-memtree-status': 'done' },
+      } else if (phase === 'done') {
+        badge = h('span', { style: SS.status, 'data-memtree-status': 'done' },
           `记忆树 · 压缩完成，释放约 ${shortTokens(job.shadowed)} token`)
+      } else if (phase === 'failed') {
+        badge = h('span', {
+          style: { ...SS.status, color: 'var(--dsw-alias-state-error-primary, #b91c1c)' },
+          'data-memtree-status': 'failed',
+        }, `记忆树 · 压缩失败${job.error ? `：${String(job.error)}` : ''}`)
       }
-      if (phase === 'failed') {
-        return h('div', { style: { ...SS.status, color: 'var(--dsw-alias-state-error-primary, #b91c1c)' }, 'data-memtree-status': 'failed' },
-          `记忆树 · 压缩失败${job.error ? `：${String(job.error)}` : ''}`)
+      if (!enabled && badge === null) {
+        badge = h('span', { style: SS.status }, '已关闭，使用普通压缩')
       }
-      return null
+      return h('div', {
+        style: { display: 'inline-flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+      }, [
+        h('label', {
+          key: 'switch',
+          style: { ...SS.status, cursor: busy ? 'progress' : 'pointer' },
+          title: '只影响当前会话；下一次压缩生效',
+        }, [
+          h('input', {
+            key: 'input',
+            type: 'checkbox',
+            checked: enabled,
+            disabled: busy,
+            onChange: toggle,
+            style: { margin: 0 },
+          }),
+          h('span', { key: 'text' }, enabled ? '本会话使用记忆树' : '本会话已关闭'),
+        ]),
+        badge,
+      ])
     }
 
     /**

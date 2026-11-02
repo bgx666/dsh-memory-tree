@@ -1,5 +1,7 @@
 node_modules/
 .edge-tmp6/
 preview/
+.workbuddy/
+explainer-video/
 *.log
 .DS_Store
