@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.3'
+    const BUILD = '2026-11-02.4'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -1299,11 +1299,13 @@ window.__ModuleLoader__.load({
           }
         })
 
-        // Ambient background-compaction progress, below the composer.
+        // Per-session switch and progress share the stats row. The stats pills
+        // sit at order 0 (activity) and 1 (usage); a negative order puts this
+        // entry first.
         ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
           name: 'conversation.composer.dock',
           id: 'memory-tree-status',
-          order: 30,
+          order: -100,
         }, MemoryTreeStatus))
 
         // Settings section: the Host exposes this plugin's Config schema as the

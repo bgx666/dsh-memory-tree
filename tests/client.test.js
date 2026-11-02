@@ -90,6 +90,7 @@ assert.equal(settingsRegistration.options.label, '记忆树')
 assert.equal(settingsRegistration.component.name, 'MemoryTreeSettings')
 assert.equal(statusRegistration.options.name, 'conversation.composer.dock')
 assert.equal(statusRegistration.options.id, 'memory-tree-status')
+assert.equal(statusRegistration.options.order, -100)
 assert.equal(statusRegistration.component.name, 'MemoryTreeStatus')
 
 const sample = [
