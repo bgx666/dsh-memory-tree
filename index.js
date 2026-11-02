@@ -1291,6 +1291,8 @@ export default class MemoryTreeCompaction {
       throw new Error('background compaction: another compaction transaction is active')
     }
 
+    record('commit-begin', `session=${sessionId}\trange=${range.start}-${range.end}`
+      + `\tseqs=${seqs.length}`)
     // Mark the run before the checkpoint pair lands. If the process dies between
     // the two stores, an unreachable orphan node set is less harmful than a
     // checkpoint that points at nodes a startup cleanup already deleted.
@@ -1334,6 +1336,7 @@ export default class MemoryTreeCompaction {
         surfaceOp: { op: 'replace', startSeq: range.start, endSeq: range.end },
         sourceEventSeqs: [startEvent.seq, summaryEvent.seq, ...seqs],
       })
+      record('commit-replaced', `session=${sessionId}\tseqs=${seqs.length}`)
       // The replacement landed: from here on the tree must NOT be rolled back
       // even if closing the bracket or the durability checkpoint fails.
       prepared.committed = true
@@ -1346,6 +1349,7 @@ export default class MemoryTreeCompaction {
         job.checkpointTokens = framedTokens
       }
       try {
+        record('commit-measure', `session=${sessionId}`)
         const header = session.requestHeader()
         const measured = engine.ctx.tokenMeter.measure(session, header)
         this._last.set(sessionId, {

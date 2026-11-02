@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.4'
+    const BUILD = '2026-11-02.5'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -217,6 +217,16 @@ window.__ModuleLoader__.load({
       const boundary = kept[0]
       const boundaryIndex = rows.indexOf(boundary)
       if (boundaryIndex <= 0) return 0
+      // A grouping row before the boundary may contain a retained member;
+      // hiding it would hide that member too. Build the protected ancestor set
+      // once instead of asking every earlier row whether it contains a keeper.
+      const protectedRows = new Set()
+      for (const keptRow of kept) {
+        for (let cursor = keptRow; cursor !== null && cursor !== parent;
+          cursor = cursor.parentElement) {
+          protectedRows.add(cursor)
+        }
+      }
       let count = 0
       for (let index = 0; index < boundaryIndex; index += 1) {
         const element = rows[index]
@@ -224,11 +234,7 @@ window.__ModuleLoader__.load({
         // tail in DOM order. It is the whole point of the fold, so never hide
         // the row that owns this card; CSS moves it to the top afterwards.
         if (element === row || element.contains?.(self) === true) continue
-        if (kept.includes(element)) continue
-        // A grouping row before the boundary may contain a retained member;
-        // hiding it would hide that member too. Its earlier children are still
-        // folded individually below.
-        if (kept.some(keptRow => element.contains?.(keptRow) === true)) continue
+        if (protectedRows.has(element)) continue
         try {
           if (!folded.has(element)) {
             folded.set(element, element.style.display)
@@ -284,9 +290,16 @@ window.__ModuleLoader__.load({
         if (!Number.isSafeInteger(turn)) continue
         let shown = true
         try {
-          const style = getComputedStyle(row)
-          shown = style.display !== 'none' && style.visibility !== 'hidden'
-            && (row.offsetParent !== null || style.position === 'fixed')
+          // Read only the plugin's own inline fold state. getComputedStyle and
+          // offsetParent force a layout for every row, which made a 6000-row
+          // replacement commit spend seconds in this helper.
+          for (let cursor = row; cursor !== null && cursor !== document.body;
+            cursor = cursor.parentElement) {
+            if (folded.has(cursor) || cursor.style?.display === 'none') {
+              shown = false
+              break
+            }
+          }
         } catch {
           shown = row.style?.display !== 'none'
         }
@@ -552,21 +565,46 @@ window.__ModuleLoader__.load({
           // order puts the card after them. `order: -1` depends on the transcript
           // being a flex/grid container and did not move it in practice; move the
           // row itself and let the observer restore that after every re-render.
+          let scheduled = 0
+          let railScheduled = 0
+          let disposed = false
+          const scheduleRail = () => {
+            if (disposed || railScheduled !== 0) return
+            railScheduled = setTimeout(() => {
+              railScheduled = 0
+              if (!disposed) filterTurnRail()
+            }, 80)
+          }
           const apply = () => {
+            if (disposed) return
             if (keepKeys.length === 0) foldSiblings(self, true)
             else foldBeforeKeys(self, keepKeys)
             if (parent.firstElementChild !== row) {
               parent.insertBefore(row, parent.firstElementChild)
             }
-            filterTurnRail()
+            scheduleRail()
           }
-          apply()
-          const observer = new MutationObserver(apply)
-          observer.observe(parent, { childList: true, subtree: true })
-          const railTimer = setInterval(filterTurnRail, 700)
+          const schedule = () => {
+            if (disposed || scheduled !== 0) return
+            // A replacement commit can produce hundreds of child-list
+            // notifications. Coalesce them; one scan after the commit is enough.
+            scheduled = setTimeout(() => {
+              scheduled = 0
+              apply()
+            }, 40)
+          }
+          // Let the replacement paint once before manipulating thousands of
+          // sibling rows; the fold is visual and a short delay is invisible.
+          schedule()
+          const observer = new MutationObserver(schedule)
+          // Only direct row inserts/removals matter; observing the whole subtree
+          // made every streaming token re-scan the transcript.
+          observer.observe(parent, { childList: true })
           return () => {
+            disposed = true
             observer.disconnect()
-            clearInterval(railTimer)
+            if (scheduled !== 0) clearTimeout(scheduled)
+            if (railScheduled !== 0) clearTimeout(railScheduled)
             restoreFolded()
             restoreTurnRail()
             if (originalNext !== null && originalNext.parentElement === parent) {
@@ -1109,6 +1147,10 @@ window.__ModuleLoader__.load({
         let alive = true
         let clicks = 0
         let revealed = false
+        let scheduled = 0
+        let scrolling = 0
+        let observer
+        let timer
         const hidden = new Map()
         const hide = (button) => {
           const box = button.parentElement
@@ -1116,34 +1158,61 @@ window.__ModuleLoader__.load({
           if (!hidden.has(box)) hidden.set(box, box.style.display)
           box.style.display = 'none'
         }
+        const stopWatching = () => {
+          if (observer !== undefined) {
+            observer.disconnect()
+            observer = undefined
+          }
+          if (timer !== undefined) {
+            clearInterval(timer)
+            timer = undefined
+          }
+          if (scheduled !== 0) {
+            clearTimeout(scheduled)
+            scheduled = 0
+          }
+        }
         const tick = () => {
-          if (!alive) return
+          if (!alive || revealed) return
           const pager = [...document.querySelectorAll('button')].filter(isLoadEarlierButton)
           for (const button of pager) hide(button)
           const card = document.querySelector('[data-memtree-card]')
           if (card !== null) {
-            if (!revealed) {
-              revealed = true
-              setTimeout(() => {
-                if (alive) card.scrollIntoView({ block: 'start' })
-              }, 80)
-            }
+            revealed = true
+            // The card is the target; stop observing the whole document, which
+            // otherwise re-scans every button on every streamed token.
+            stopWatching()
+            scrolling = setTimeout(() => {
+              if (alive) card.scrollIntoView({ block: 'start' })
+            }, 80)
             return
           }
-          if (clicks >= 40) return
+          if (clicks >= 40) {
+            stopWatching()
+            return
+          }
           const button = pager.find(candidate => candidate.disabled !== true)
           if (button === undefined) return
           clicks += 1
           button.click()
         }
+        const schedule = () => {
+          if (!alive || revealed || scheduled !== 0) return
+          scheduled = setTimeout(() => {
+            scheduled = 0
+            tick()
+          }, 120)
+        }
         tick()
-        const observer = new MutationObserver(tick)
-        observer.observe(document.body, { childList: true, subtree: true })
-        const timer = setInterval(tick, 700)
+        if (!revealed) {
+          observer = new MutationObserver(schedule)
+          observer.observe(document.body, { childList: true, subtree: true })
+          timer = setInterval(schedule, 1000)
+        }
         return () => {
           alive = false
-          observer.disconnect()
-          clearInterval(timer)
+          stopWatching()
+          if (scrolling !== 0) clearTimeout(scrolling)
           for (const [box, display] of hidden) box.style.display = display
         }
       }, [sessionId])

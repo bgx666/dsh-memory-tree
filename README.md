@@ -41,7 +41,7 @@ github:bgx666/dsh-memory-tree
 |---|---|
 | 何时压 | 框架按 `thresholdRatio`/`retainRatio` 决定；插件只拿到“要压这一段” |
 | 分片 | 3 万 token/片、最多 12 片、优先用户消息边界、浮动 0.75×~1.4×、不切开 tool 配对 |
-| 渐进前缀 | 第 k 次调用带「第 1..k 片原文」：`src/engine.js` 的 `chunks.slice(0, k+1)` |
+| 渐进前缀 | 从最新一片往前调用，每次带「第 1..k 片原文」：`src/engine.js` 的 `chunks.slice(0, k+1)`；先建立最长前缀缓存，后续请求只读更短前缀 |
 | 指令定位 | 头锚点=首条正文前 120 字、尾锚点=末条正文结尾 60 字 |
 | 输入组装 | system（对话自身的 system 头）+ 带标记的已有节点 + 待压原文 + 指令 |
 | 输出 | JSON：summary/narration/task/decisions/lessons/context/user，`src/schema.js` 归一化 |
@@ -144,7 +144,7 @@ node src/status.js                    # 所有会话的树 + 生命周期日志
 node src/status.js <session-id>       # 某个会话的完整树（含已合并的子节点）
 node tests/policy.test.js             # 定价/区间/空闲锁
 node tests/async.test.js              # 后台摘要 → 空闲提交 → 失败回滚
-node tests/smoke.test.js              # 离线测试（6 例，不需要 Harness）
+node tests/smoke.test.js              # 离线测试（9 例，不需要 Harness）
 node tests/client.test.js             # 离线验证卡片槽位与 checkpoint 解析
 ```
 
@@ -216,7 +216,7 @@ compact   session=…  leaves=8  merges=1  nodes=5  depth=L1  blocks=6  chars=�
 
 ```text
 pre-step:  测到超阈值 → 截取最老的平衡区间 → 返回 null（本轮照常请求模型）
-后台:      分片/渐进前缀/结构化摘要 → 写 SQLite 节点（与主对话并行）
+后台:      分片/从新到旧的渐进前缀/结构化摘要 → 写 SQLite 节点（与主对话并行）
 回合结束:  whenIdle() → runMaintenance → 追加 compaction 事件替换区间
 ```
 
@@ -259,6 +259,8 @@ ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
 DOM 不合预期就一行都不动，卸载时一定还原 —— 宁可退回「只换外观」，也不能把转录弄空。
 卡片始终收起，没有「展开原文」；会话打开或切换时客户端会自动隐藏并点击「加载更早」，
 直到记忆卡片进入 DOM，然后把视图滚到卡片，因此可见的最早一条就是记忆摘要节点。
+替换上下文时转录可能有几千行：折叠 observer 只监听直接子行并合并成一次任务，状态条找到卡片后
+停止全页观察，轮次导航也不再逐行调用 `getComputedStyle`，避免一次替换触发成百上千次全量扫描。
 
 > 这层是页面脚本（`window.__ModuleLoader__.load({id, factory})`），没有构建步骤：
 > `react` 由 app 在运行时提供。改完 `client.js` 需要刷新页面；宿主侧（`index.js`）改动仍需重启 DSH。
@@ -281,7 +283,7 @@ DOM 不合预期就一行都不动，卸载时一定还原 —— 宁可退回�
 | `prompts/compress/` | 内置压缩提示词 |
 | `tests/policy.test.js` | 定价/区间选择/回放/空闲锁的离线测试 |
 | `tests/async.test.js` | 用假 session 跑 `defer → 后台摘要 → 空闲提交`，含提交失败回滚 |
-| `tests/smoke.test.js` | 离线测试（6 例，覆盖 checkpoint 识别/分片/合并/节点文本/下钻回放） |
+| `tests/smoke.test.js` | 离线测试（9 例，覆盖 checkpoint 识别/分片/后向调用/合并/节点文本/下钻回放） |
 | `tests/client.test.js` | 按页面加载器的真实形态求值 `client.js`：信封、槽位、key、checkpoint 解析 |
 | `tests/probe-install.mjs` | 比对源码与 profile 里的安装副本，并检查数据库 schema |
 | `tools/sync.mjs` | 发布到 profile（`--check` 只比对不写） |

@@ -197,6 +197,52 @@ await test('over-full levels merge upward until the threshold is satisfied', asy
   store.close()
 })
 
+await test('backward calls start with the longest, newest prefix', async () => {
+  const store = new MemoryTreeStore(dbPath)
+  const sessionId = 's-backward-calls'
+  const calls = []
+  const answer = stubComplete()
+  await compactIntoTree({
+    store,
+    limits: { chunkTokens: 1, maxChunks: 12, nodeBudget: 1000, mergeThreshold: 99, branch: 4, maxMerges: 8 },
+    input: { messages: freshMessages(3) },
+    agent: { session: { id: sessionId } },
+    complete: async (request) => {
+      calls.push(request.messages)
+      return answer(request)
+    },
+    sessionId,
+  })
+  assert.ok(calls.length >= 3)
+  assert.match(JSON.stringify(calls[0]), /第 3 个回答/)
+  assert.doesNotMatch(JSON.stringify(calls.at(-1)), /第 2 个回答/)
+  assert.match(JSON.stringify(calls.at(-1)), /第 1 个问题/)
+  store.close()
+})
+
+await test('backward chunk calls still write original message ranges', async () => {
+  const store = new MemoryTreeStore(dbPath)
+  const sessionId = 's-backward'
+  const result = await compactIntoTree({
+    store,
+    limits: { chunkTokens: 1, maxChunks: 12, nodeBudget: 1000, mergeThreshold: 99, branch: 4, maxMerges: 8 },
+    input: { messages: freshMessages(8) },
+    agent: { session: { id: sessionId } },
+    complete: stubComplete(),
+    sessionId,
+  })
+  assert.ok(result.leaves >= 3)
+  const leaves = store.activeAtLevel(sessionId, 0)
+  assert.equal(leaves.length, result.leaves)
+  assert.equal(leaves[0].msg_start, 1)
+  assert.equal(leaves.at(-1).msg_end, result.covered)
+  for (let index = 1; index < leaves.length; index += 1) {
+    assert.equal(leaves[index].msg_start, leaves[index - 1].msg_end + 1,
+      'leaf ranges must stay contiguous in original message order')
+  }
+  store.close()
+})
+
 await test('explore_memory_tree lists roots and replays a leaf original', async () => {
   const store = new MemoryTreeStore(dbPath)
   const sessionId = 's-tool'

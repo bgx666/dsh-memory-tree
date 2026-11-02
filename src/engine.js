@@ -187,14 +187,21 @@ export async function compactIntoTree({
     // replayed as raw prefix messages, and repeating them as summary lines would
     // put the same span into the prompt twice.
     const folded = store.roots(partition).map(row => textMessage('user', nodeText(row)))
-    let offset = 0
-    for (const [index, chunk] of chunks.entries()) {
+    const offsets = []
+    let total = 0
+    for (const chunk of chunks) {
+      offsets.push(total)
+      total += chunk.length
+    }
+    // Backward order: the first request is the longest, so it refreshes the
+    // whole pending prefix in the provider cache; each later request is one
+    // chunk shorter and can reuse that prefix. Every request still carries the
+    // same content as the forward order for that chunk.
+    for (let index = chunks.length - 1; index >= 0; index -= 1) {
       signal?.throwIfAborted?.()
-      const start = base + offset
+      const chunk = chunks[index]
+      const start = base + offsets[index]
       const end = start + chunk.length - 1
-      // Progressive prefix: every earlier chunk rides along as background. That
-      // is what makes the second call share a byte-identical prefix with the
-      // first instead of re-pricing the whole batch.
       const prefix = chunks.slice(0, index + 1).flat()
       const { head: anchor, tail: anchorEnd } = chunks.length > 1
         ? anchorQuotes(chunk)
@@ -230,18 +237,21 @@ export async function compactIntoTree({
         })),
         meta: { schema_version: SCHEMA_VERSION, fields },
         count: chunk.length,
+        msgStart: start,
+        msgEnd: end,
         dedupeKey: null,
         timeRange: timeRangeOf(chunk, times),
         runId,
       })
       created.push(leafId)
       onNodeId?.(leafId)
-      offset += chunk.length
-      covered += chunk.length
       leaves += 1
-      onEvent?.('leaf', `n=${index + 1}/${chunks.length}\trange=${start}-${end}`
+      onEvent?.('leaf', `n=${chunks.length - index}/${chunks.length}\trange=${start}-${end}`
         + `\tsummary=${node.summary.length}\tkind=${degraded ? 'mechanical (model answer unusable)' : 'model'}`)
     }
+    // Only the completed run may advance the checkpoint past the fresh region.
+    // A cap that left a newer tail untouched still commits just the prefix.
+    covered += total
   }
 
   const merges = await mergeUp({

@@ -291,20 +291,25 @@ export class MemoryTreeStore {
    * @param {Array<{role: string, content: unknown}>} leaf.details the summarized messages.
    * @param {object} leaf.meta `{schema_version, fields}` payload.
    * @param {number} leaf.count how many messages it covers.
+   * @param {number} [leaf.msgStart] explicit first message ordinal; defaults to the next free ordinal.
+   * @param {number} [leaf.msgEnd] explicit last message ordinal; defaults to `msgStart + count - 1`.
    * @param {string} [leaf.dedupeKey] content hash, unique per session.
    * @param {[string, string] | null} [leaf.timeRange] start/end timestamps.
    * @param {string} [leaf.runId] background run marker.
    * @returns {string} the new id.
    */
-  addLeaf({ sessionId, summary, details, meta, count, dedupeKey, timeRange, runId }) {
+  addLeaf({
+    sessionId, summary, details, meta, count, msgStart, msgEnd, dedupeKey, timeRange, runId,
+  }) {
     const id = this.#nextId(sessionId, 0)
-    const start = this.#nextOrdinal(sessionId)
+    const start = Number.isSafeInteger(msgStart) ? msgStart : this.#nextOrdinal(sessionId)
+    const end = Number.isSafeInteger(msgEnd) ? msgEnd : start + Math.max(0, count - 1)
     const [timeStart, timeEnd] = Array.isArray(timeRange) ? timeRange : [null, null]
     this.#open()
       .prepare(`INSERT INTO nodes
         (session_id, id, level, summary, msg_start, msg_end, dedupe_key, details, meta, time_start, time_end, run_id)
         VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(sessionId, id, summary, start, start + Math.max(0, count - 1),
+      .run(sessionId, id, summary, start, end,
         dedupeKey ?? null, JSON.stringify(details ?? []), JSON.stringify(meta ?? {}),
         timeStart, timeEnd, runId ?? null)
     return id
