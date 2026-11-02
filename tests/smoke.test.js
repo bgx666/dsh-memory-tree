@@ -240,6 +240,9 @@ await test('backward chunk calls still write original message ranges', async () 
     assert.equal(leaves[index].msg_start, leaves[index - 1].msg_end + 1,
       'leaf ranges must stay contiguous in original message order')
   }
+  const serials = leaves.map(row => Number.parseInt(String(row.id).split('_')[1], 10))
+  assert.deepEqual(serials, [...serials].sort((a, b) => a - b),
+    'leaf ids must increase with the message timeline even when model calls run backward')
   store.close()
 })
 

@@ -193,6 +193,10 @@ export async function compactIntoTree({
       offsets.push(total)
       total += chunk.length
     }
+    // Reserve ids in forward order even though the model calls run backward.
+    // The id serial then follows the conversation timeline instead of the cache
+    // order, so `node0_00N` remains a chronological handle.
+    const leafIds = chunks.map(() => store.nextNodeId(partition, 0))
     // Backward order: the first request is the longest, so it refreshes the
     // whole pending prefix in the provider cache; each later request is one
     // chunk shorter and can reuse that prefix. Every request still carries the
@@ -228,6 +232,7 @@ export async function compactIntoTree({
       const fields = { ...node.fields }
       if (fields.context.cwd === '' && cwd !== '') fields.context.cwd = cwd
       const leafId = store.addLeaf({
+        id: leafIds[index],
         sessionId: partition,
         summary: node.summary,
         details: chunk.map(message => ({

@@ -240,6 +240,17 @@ export class MemoryTreeStore {
   }
 
   /**
+   * Reserve the next per-level node id. Callers that summarize chunks in reverse
+   * order reserve ids in forward order so the serial still follows the timeline.
+   * @param {string} sessionId owning session.
+   * @param {number} [level] tree level, default 0.
+   * @returns {string} reserved id.
+   */
+  nextNodeId(sessionId, level = 0) {
+    return this.#nextId(sessionId, level)
+  }
+
+  /**
    * Open a durable run marker before a background pass writes nodes.
    * @param {string} sessionId owning session.
    * @returns {string} run id attached to every node the pass writes.
@@ -293,6 +304,7 @@ export class MemoryTreeStore {
    * @param {Array<{role: string, content: unknown}>} leaf.details the summarized messages.
    * @param {object} leaf.meta `{schema_version, fields}` payload.
    * @param {number} leaf.count how many messages it covers.
+   * @param {string} [leaf.id] reserved id; defaults to the next per-level id.
    * @param {number} [leaf.msgStart] explicit first message ordinal; defaults to the next free ordinal.
    * @param {number} [leaf.msgEnd] explicit last message ordinal; defaults to `msgStart + count - 1`.
    * @param {string} [leaf.dedupeKey] content hash, unique per session.
@@ -301,9 +313,11 @@ export class MemoryTreeStore {
    * @returns {string} the new id.
    */
   addLeaf({
-    sessionId, summary, details, meta, count, msgStart, msgEnd, dedupeKey, timeRange, runId,
+    id: reservedId, sessionId, summary, details, meta, count, msgStart, msgEnd, dedupeKey, timeRange, runId,
   }) {
-    const id = this.#nextId(sessionId, 0)
+    const id = typeof reservedId === 'string' && reservedId !== ''
+      ? reservedId
+      : this.#nextId(sessionId, 0)
     const start = Number.isSafeInteger(msgStart) ? msgStart : this.#nextOrdinal(sessionId)
     const end = Number.isSafeInteger(msgEnd) ? msgEnd : start + Math.max(0, count - 1)
     const [timeStart, timeEnd] = Array.isArray(timeRange) ? timeRange : [null, null]
