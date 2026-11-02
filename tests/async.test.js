@@ -30,6 +30,14 @@ const body = source
 assert.equal(/^import /m.test(body), false)
 
 let lastStore
+let promptSection
+const fakePrompt = {
+  getSectionOrder: () => 1100,
+  section(options) {
+    promptSection = options
+    return () => {}
+  },
+}
 class FakeStore {
   constructor() {
     this.rolledBack = []
@@ -136,6 +144,9 @@ function makeCtx() {
   return {
     logger: { warn: noop },
     effect(fn) { this.cleanup = fn(); return () => {} },
+    inject(names, callback) {
+      if (names.includes('systemPrompt')) callback({ systemPrompt: fakePrompt })
+    },
     on: noop,
     get: () => undefined,
     sessions: { flush: async () => {} },
@@ -182,6 +193,9 @@ const config = {
 const first = makeSession()
 const plugin = new MemoryTreeCompaction(makeCtx(), config)
 plugin._tree().setSessionEnabled(String(first.session.id), true)
+assert.equal(promptSection.name, 'tool:explore_memory_tree')
+assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /explore_memory_tree/)
+assert.equal(promptSection.text({ agent: { session: { id: 'other' } } }), '')
 const agent = {
   session: first.session,
   whenIdle: async () => {},

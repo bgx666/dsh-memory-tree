@@ -46,6 +46,16 @@ if (typeof Base !== 'function') {
 /** Package root, used to read the shipped prompt templates as schema defaults. */
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
 
+/** Prompt rule present only for a session that explicitly enabled the tree. */
+const MEMORY_TREE_PROMPT = [
+  'This session keeps a hierarchical memory tree of conversation that was',
+  'compacted out of the live context. When the user asks about earlier',
+  'discussion, decisions, promises, or attempted work, call',
+  'explore_memory_tree before answering instead of guessing from the compacted',
+  'summary alone. List the roots first, then expand the relevant nodes. If the',
+  'tree is empty, answer from the visible conversation.',
+].join(' ')
+
 /** One shipped prompt as its schema default, or an empty string if absent. */
 function promptDefault(name) {
   try {
@@ -565,6 +575,39 @@ export default class MemoryTreeCompaction {
   _skipUntil = new Map()
 
   /**
+   * Add the drill-down habit to the system prompt for opted-in sessions only.
+   *
+   * A tool description alone is easy to skim past, and a global rule would make
+   * sessions that never enabled the tree call a tool whose store is empty. The
+   * section provider receives the assembling agent, so the text can disappear
+   * for every other session.
+   * @returns {void}
+   */
+  _registerPromptRule() {
+    const ctx = this.ctx
+    if (typeof ctx?.inject !== 'function') return
+    ctx.inject(['systemPrompt'], (scope) => {
+      const prompt = scope.systemPrompt
+      if (prompt?.section === undefined) return
+      try {
+        ctx.effect(() => prompt.section({
+          name: 'tool:explore_memory_tree',
+          order: prompt.getSectionOrder('TOOL_READ') + 10,
+          text: (context) => {
+            const agent = context?.agent
+            const sessionId = String(agent?.session?.id ?? '')
+            if (sessionId === '') return ''
+            return this._sessionEnabled(sessionId) ? MEMORY_TREE_PROMPT : ''
+          },
+        }), 'memtree: prompt rule')
+      } catch (error) {
+        ctx.logger?.warn?.(`memory-tree: prompt rule unavailable: ${
+          error instanceof Error ? error.message : String(error)}`)
+      }
+    })
+  }
+
+  /**
    * @param {import('@deepseek-ai/cordis').Context} ctx owning context.
    * @param {object} [config] profile `config:` block: tree budgets.
    */
@@ -577,6 +620,12 @@ export default class MemoryTreeCompaction {
     } catch (error) {
       // A rejected tool declaration must not take compaction down with it.
       ctx.logger?.warn?.(`memory-tree: explore_memory_tree registration failed: ${
+        error instanceof Error ? error.message : String(error)}`)
+    }
+    try {
+      this._registerPromptRule()
+    } catch (error) {
+      ctx.logger?.warn?.(`memory-tree: prompt rule registration failed: ${
         error instanceof Error ? error.message : String(error)}`)
     }
     const ROUTE_CLEANUP = Symbol.for('@xiaob/dsh-memory-tree/route-cleanup')
