@@ -37,6 +37,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_nodes_dedupe
   ON nodes(session_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_nodes_active ON nodes(session_id, level, is_active);
 CREATE INDEX IF NOT EXISTS ix_nodes_parent ON nodes(session_id, parent_id);
+CREATE INDEX IF NOT EXISTS ix_nodes_roots
+  ON nodes(session_id, is_active, parent_id, msg_start);
 CREATE TABLE IF NOT EXISTS runs (
   run_id     TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,

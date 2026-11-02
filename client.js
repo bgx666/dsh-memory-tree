@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.7'
+    const BUILD = '2026-11-02.8'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -782,17 +782,36 @@ window.__ModuleLoader__.load({
 
       const descendantIds = id => collectDescendants(nodeCache, id)
 
+      const forgetCached = (ids) => {
+        setNodeCache(cache => {
+          const next = { ...cache }
+          let changed = false
+          for (const id of ids) {
+            if (next[id] === undefined) continue
+            delete next[id]
+            changed = true
+          }
+          return changed ? next : cache
+        })
+      }
+
       const toggleNode = (id) => {
+        if (expanded.has(id)) {
+          // Collapsing a branch also clears everything loaded beneath it, so
+          // reopening starts closed and the client does not retain old bodies.
+          const descendants = descendantIds(id)
+          setExpanded(previous => {
+            const next = new Set(previous)
+            for (const descendant of descendants) next.delete(descendant)
+            next.delete(id)
+            return next
+          })
+          forgetCached([id, ...descendants])
+          return
+        }
         setExpanded(previous => {
           const next = new Set(previous)
-          if (next.has(id)) {
-            // Collapsing a branch also collapses everything loaded beneath it,
-            // so reopening the parent starts from the same closed state.
-            for (const descendant of descendantIds(id)) next.delete(descendant)
-            next.delete(id)
-          } else {
-            next.add(id)
-          }
+          next.add(id)
           return next
         })
         loadNode(id)
@@ -800,6 +819,7 @@ window.__ModuleLoader__.load({
 
       const collapseAll = () => {
         setExpanded(new Set())
+        setNodeCache({})
       }
 
       const shadowedCount = Number(data.shadowedItemCount) || 0
