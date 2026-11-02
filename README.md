@@ -2,7 +2,7 @@
 
 把 DeepSeek Harness 的「压缩成一段摘要」换成分层记忆树。
 
-压缩后的上下文由节点消息组成；节点攒够 8 个就合并成父节点，父节点再攒够再往上，
+压缩后的上下文由节点消息组成；节点攒够 9 个就取最早 3 个合并成父节点，父节点再攒够再往上，
 `explore_memory_tree(node_id)` 可以逐层下钻到原始消息。
 
 ## 快速使用（先看这里）
@@ -63,7 +63,7 @@ github:bgx666/dsh-memory-tree
 [用户] 偏好、习惯
 ```
 
-所以模型看到的上下文**本身就是这棵树**。节点攒够 8 个就把最早的 4 个合并成父节点，
+所以模型看到的上下文**本身就是这棵树**。节点攒够 9 个就把最早的 3 个合并成父节点，
 父节点再攒够再往上，`explore_memory_tree(node_id)` 可以逐层下钻到原文。
 
 ## 一次压缩做什么
@@ -78,7 +78,7 @@ github:bgx666/dsh-memory-tree
 | 输出 | JSON：summary/narration/task/decisions/lessons/context/user，`src/schema.js` 归一化 |
 | 预算 | `nodeBudget` 默认 1000 字，summary 占 40%，超了按固定牺牲顺序硬裁 |
 | 落树 | `store.addLeaf`：summary、消息范围、原文 details、结构化字段 |
-| 向上合并 | 阈值 8、每次取最早 4 个、一轮持续合并到低于阈值（最多 8 批） |
+| 向上合并 | 阈值 9、每次取最早 3 个、一轮持续合并到低于阈值（最多 8 批） |
 | 合并输入 | 只放节点消息；目标去标记；目标之后的节点（未来信息）不进 |
 
 ## 提示词
@@ -107,8 +107,8 @@ github:bgx666/dsh-memory-tree
 打开 **设置 → 记忆树**，可以编辑：
 
 - 分片大小 `chunkTokens`、每轮分片数 `maxChunks`
-- 触发阈值 `triggerTokens`（0 = 按窗口比例）、保留最近消息条数 `retainMessages`（只按条数，不再有 token 保留比例）
-- 节点字数 `nodeBudget`、合并阈值 `mergeThreshold`、每次合并数 `branch`、每轮合并批数 `maxMerges`
+- 触发阈值 `triggerTokens`（默认 500000；0 = 按窗口比例）、保留最近消息条数 `retainMessages`（默认 30，只按条数）
+- 节点字数 `nodeBudget`、合并阈值 `mergeThreshold`（默认 9）、每次合并数 `branch`（默认 3）、每轮合并批数 `maxMerges`
 - 语言 `zh/en`、后台异步开关
 - 7 类压缩提示词的中英文模板（叶子、单分片范围、多分片范围、预算、JSON 形状、父节点、重试）
 
@@ -123,8 +123,10 @@ profile 补丁 `$DSH_HOME/profiles/desktop/cordis.patch.yml` 的 `memory-tree` �
     chunkTokens: 30000     # 每片估算 token（字符数 ×1.2）
     maxChunks: 12          # 一轮最多切几片，剩下的留给下一轮
     nodeBudget: 1000       # 整节点字数（中文 1:1；英文 ×3.5），summary 占 40%
-    mergeThreshold: 8      # 某层活跃节点 ≥8 才合并
-    branch: 4              # 每次合并最早 4 个
+    triggerTokens: 500000  # 达到约 50 万 token 才触发压缩；0 = 按窗口比例
+    retainMessages: 30     # 压缩后保留最近 30 条原始消息
+    mergeThreshold: 9      # 某层活跃节点 ≥9 才合并
+    branch: 3              # 每次合并最早 3 个
     maxMerges: 8           # 一轮最多合并几批
     language: zh           # zh | en，选哪套指令
     async: true            # true = 后台摘要，回合结束再落 checkpoint（默认）
@@ -183,7 +185,7 @@ node tests/client.test.js             # 离线验证卡片槽位与 checkpoint �
 
 ```
 import    pid=…  prototype=patched  rewrapped=no  base=…app.asar/…
-activate  pid=…  service=…  chunkTokens=30000  nodeBudget=1000  threshold=8  branch=4  lang=zh  base=…  self=…
+activate  pid=…  service=…  chunkTokens=30000  nodeBudget=1000  threshold=9  branch=3  lang=zh  base=…  self=…
 probe     session=…  route=opencode-go/deepseek-v4.1-flash  messages=371  tools=N (not forwarded)  timed=371  aborted=false
 start     session=…  fresh=371  chunks=8
 leaf      session=…  n=1/8  range=1-47    summary=612
@@ -217,7 +219,7 @@ compact   session=…  leaves=8  merges=1  nodes=5  depth=L1  blocks=6  chars=�
 - 卡片上新增的“本次压缩 N 条 · 释放约 X token”就是这次释放量；它和上面的百分比不是同一套计量
 
 如果觉得压完还是很高，通常是 `retainMessages` 保留得太多（比如 200 条），只压掉了最早一小段。
-在 **设置 → 记忆树** 里把 `triggerTokens` 改成 `100000`、`retainMessages` 改成 `20`，
+在 **设置 → 记忆树** 里把 `triggerTokens` 改成 `100000`、`retainMessages` 改成 `10`，
 下一次压缩释放的量会明显更大，百分比下降也会更明显。压缩后保留的尾部是**整条消息**，不会把某条消息从中间切开。
 
 

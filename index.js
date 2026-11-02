@@ -82,11 +82,11 @@ export const Config = z.object({
   chunkTokens: z.number().step(1).min(1).default(30000).volatile(),
   maxChunks: z.number().step(1).min(1).default(12).volatile(),
   nodeBudget: z.number().step(1).min(200).default(1000).volatile(),
-  mergeThreshold: z.number().step(1).min(2).default(8).volatile(),
-  branch: z.number().step(1).min(2).default(4).volatile(),
+  mergeThreshold: z.number().step(1).min(2).default(9).volatile(),
+  branch: z.number().step(1).min(2).default(3).volatile(),
   maxMerges: z.number().step(1).min(1).default(8).volatile(),
-  triggerTokens: z.number().step(1).min(0).default(0).volatile(),
-  retainMessages: z.number().step(1).min(0).default(20).volatile(),
+  triggerTokens: z.number().step(1).min(0).default(500000).volatile(),
+  retainMessages: z.number().step(1).min(0).default(30).volatile(),
   language: z.string().default('zh').volatile(),
   async: z.boolean().default(true).volatile(),
   mode: z.string().default('').volatile(),
@@ -303,18 +303,21 @@ function readLimits(config = {}) {
     ['chunkTokens', 'DSH_MEMORY_TREE_CHUNK_TOKENS', 30000],
     ['maxChunks', 'DSH_MEMORY_TREE_MAX_CHUNKS', 12],
     ['nodeBudget', 'DSH_MEMORY_TREE_NODE_BUDGET', 1000],
-    ['mergeThreshold', 'DSH_MEMORY_TREE_MERGE_THRESHOLD', 8],
-    ['branch', 'DSH_MEMORY_TREE_BRANCH', 4],
+    ['mergeThreshold', 'DSH_MEMORY_TREE_MERGE_THRESHOLD', 9],
+    ['branch', 'DSH_MEMORY_TREE_BRANCH', 3],
     ['maxMerges', 'DSH_MEMORY_TREE_MAX_MERGES', 8],
   ]
   const limits = {}
   for (const [key, env, fallback] of spec) {
     limits[key] = configInt(config[key]) ?? envInt(env, fallback)
   }
-  // 0 = follow the backend's window-ratio policy for *when* to compact.
-  // How much tail survives is always a message count, never a token budget.
-  limits.triggerTokens = configCount(config['triggerTokens'], envCount('DSH_MEMORY_TREE_TRIGGER_TOKENS', 0))
-  limits.retainMessages = configCount(config['retainMessages'], envCount('DSH_MEMORY_TREE_RETAIN_MESSAGES', 20))
+  // 500k is the fixed default; an explicit 0 follows the backend's
+  // window-ratio policy instead. How much tail survives is always a message
+  // count, never a token budget.
+  limits.triggerTokens = configCount(config['triggerTokens'],
+    envCount('DSH_MEMORY_TREE_TRIGGER_TOKENS', 500000))
+  limits.retainMessages = configCount(config['retainMessages'],
+    envCount('DSH_MEMORY_TREE_RETAIN_MESSAGES', 30))
   limits.language = configText(config['language']) === 'en' ? 'en' : 'zh'
   // Background compression is the default. `sync` is the escape hatch for
   // one-off debugging: it restores the backend's blocking behavior.
@@ -1218,7 +1221,7 @@ export default class MemoryTreeCompaction {
     let range = selectRange(
       session,
       measurement,
-      spec.retainMessages ?? this._limits.retainMessages ?? 20,
+      spec.retainMessages ?? this._limits.retainMessages ?? 30,
       toolPairingBalancedBefore,
     )
     if (range === null) {

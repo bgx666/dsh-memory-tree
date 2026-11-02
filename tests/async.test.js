@@ -208,6 +208,7 @@ const config = {
   async: true, chunkTokens: 30000, maxChunks: 12, nodeBudget: 1000,
   mergeThreshold: 8, branch: 4, maxMerges: 8, language: 'zh',
   retainMessages: 1,
+  triggerTokens: 0,
 }
 
 const nodeResponse = { status: 0, body: '' }

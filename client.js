@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.8'
+    const BUILD = '2026-11-02.9'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -956,11 +956,11 @@ window.__ModuleLoader__.load({
     const SETTINGS_NUMBERS = [
       ['chunkTokens', '每片 token 上限', '一次压缩请求的分片上限，默认 30000。', 1],
       ['maxChunks', '每轮最多分片', '一次压缩最多切几片，默认 12。', 1],
-      ['triggerTokens', '触发阈值（token）', '0 = 按模型窗口比例；正数时达到这个预算才触发压缩。', 0],
-      ['retainMessages', '保留最近消息条数', '只按消息条数保留；最近 N 条整消息原样留在上下文里。', 1],
+      ['triggerTokens', '触发阈值（token）', '默认 500000（50 万）；0 = 按模型窗口比例；正数时达到这个预算才触发压缩。', 0],
+      ['retainMessages', '保留最近消息条数', '只按消息条数保留，默认 30；最近 N 条整消息原样留在上下文里。', 1],
       ['nodeBudget', '节点字数预算', '整节点目标字数，默认 1000，summary 约占 40%。', 200],
-      ['mergeThreshold', '合并阈值', '某层活跃节点达到这个数才合并，默认 8。', 2],
-      ['branch', '每次合并节点数', '每次取最早几个节点合并，默认 4。', 2],
+      ['mergeThreshold', '合并阈值', '某层活跃节点达到这个数才合并，默认 9。', 2],
+      ['branch', '每次合并节点数', '每次取最早几个节点合并，默认 3。', 2],
       ['maxMerges', '每轮最多合并批数', '一次压缩最多向上合并几批，默认 8。', 1],
     ]
 
