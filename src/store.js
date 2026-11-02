@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS keeps (
 );
 CREATE TABLE IF NOT EXISTS session_prefs (
   session_id TEXT PRIMARY KEY,
-  enabled    INTEGER NOT NULL DEFAULT 1,
+  enabled    INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 `
@@ -356,15 +356,17 @@ export class MemoryTreeStore {
 
   /**
    * Whether one session opted into memory-tree compaction. Unknown sessions
-   * default to enabled, so existing conversations keep working after upgrade.
+   * default to disabled, so new conversations and conversations opened before
+   * the plugin was installed stay on the framework's ordinary compaction until
+   * the user turns the switch on.
    * @param {string} sessionId owning session.
-   * @returns {boolean} true unless the session explicitly turned it off.
+   * @returns {boolean} true only after this session explicitly opted in.
    */
   sessionEnabled(sessionId) {
     const row = this.#open()
       .prepare('SELECT enabled FROM session_prefs WHERE session_id = ?')
       .get(sessionId)
-    return row === undefined || Number(row['enabled']) !== 0
+    return row !== undefined && Number(row['enabled']) === 1
   }
 
   /**

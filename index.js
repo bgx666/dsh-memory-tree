@@ -700,7 +700,8 @@ export default class MemoryTreeCompaction {
 
   /**
    * Whether one session currently opts into memory-tree compaction. A store
-   * failure must not silently disable compaction, so it defaults to enabled.
+   * failure falls back to the framework's ordinary compaction, so it defaults
+   * to disabled rather than claiming a tree the user never enabled.
    * @param {string} sessionId owning session.
    * @returns {boolean} the session's switch.
    */
@@ -708,7 +709,7 @@ export default class MemoryTreeCompaction {
     try {
       return this._tree().sessionEnabled(sessionId)
     } catch {
-      return true
+      return false
     }
   }
 
@@ -914,7 +915,7 @@ export default class MemoryTreeCompaction {
       last: session === '' ? null : this._last.get(session) ?? null,
       live,
       keep,
-      enabled: session === '' ? true : this._sessionEnabled(session),
+      enabled: session === '' ? false : this._sessionEnabled(session),
     })
     res.writeHead(200, {
       'content-type': 'application/json; charset=utf-8',

@@ -33,8 +33,11 @@ let lastStore
 class FakeStore {
   constructor() {
     this.rolledBack = []
+    this.prefs = new Map()
     lastStore = this
   }
+  sessionEnabled(sessionId) { return this.prefs.get(sessionId) === true }
+  setSessionEnabled(sessionId, enabled) { this.prefs.set(sessionId, enabled === true) }
   rollback(sessionId, ids) { this.rolledBack.push([sessionId, ids]) }
   roots() { return [] }
   stats() { return { active: 1, depth: 0, covered: 10 } }
@@ -174,6 +177,7 @@ const config = {
 
 const first = makeSession()
 const plugin = new MemoryTreeCompaction(makeCtx(), config)
+plugin._tree().setSessionEnabled(String(first.session.id), true)
 const agent = {
   session: first.session,
   whenIdle: async () => {},
@@ -190,6 +194,7 @@ assert.deepEqual(lastStore.rolledBack, [])
 
 const second = makeSession({ failAt: 'user/message' })
 const failing = new MemoryTreeCompaction(makeCtx(), config)
+failing._tree().setSessionEnabled(String(second.session.id), true)
 const failingAgent = {
   session: second.session,
   whenIdle: async () => {},

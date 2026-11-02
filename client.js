@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.2'
+    const BUILD = '2026-11-02.3'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -1101,7 +1101,7 @@ window.__ModuleLoader__.load({
       const [job, setJob] = react.useState(null)
       const [last, setLast] = react.useState(null)
       const [live, setLive] = react.useState(null)
-      const [enabled, setEnabled] = react.useState(true)
+      const [enabled, setEnabled] = react.useState(false)
       const [busy, setBusy] = react.useState(false)
 
       react.useEffect(() => {
