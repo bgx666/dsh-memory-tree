@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.1'
+    const BUILD = '2026-11-02.2'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -252,6 +252,88 @@ window.__ModuleLoader__.load({
         }
       }
       folded.clear()
+    }
+
+    /** Rail marks hidden because their user prompt is outside the context. */
+    const railHidden = new Map()
+
+    /**
+     * Hide turn-rail marks whose user message row is folded away.
+     *
+     * A mark has no message key, only the turn number in its accessible label.
+     * Rows do carry `data-chat-turn`, so a turn stays navigable while any of its
+     * user/steering rows remains visible; turns with rows but no visible user
+     * row disappear from the rail. Turns that are merely not loaded keep their
+     * marks, so paging still works.
+     * @returns {void}
+     */
+    function filterTurnRail() {
+      if (typeof document === 'undefined') return
+      let rows
+      try {
+        rows = [...document.querySelectorAll('[data-chat-node-key]')]
+      } catch {
+        return
+      }
+      const visible = new Set()
+      const foldedAway = new Set()
+      for (const row of rows) {
+        const key = String(row.getAttribute?.('data-chat-node-key') ?? '')
+        if (!key.startsWith('13:input-message') && !key.startsWith('8:steering')) continue
+        const turn = Number(row.getAttribute?.('data-chat-turn'))
+        if (!Number.isSafeInteger(turn)) continue
+        let shown = true
+        try {
+          const style = getComputedStyle(row)
+          shown = style.display !== 'none' && style.visibility !== 'hidden'
+            && (row.offsetParent !== null || style.position === 'fixed')
+        } catch {
+          shown = row.style?.display !== 'none'
+        }
+        if (shown) {
+          visible.add(turn)
+          foldedAway.delete(turn)
+        } else if (!visible.has(turn)) {
+          foldedAway.add(turn)
+        }
+      }
+      let navs
+      try {
+        navs = [...document.querySelectorAll('nav')].filter(nav =>
+          /turn|轮|回合/i.test(String(nav.getAttribute('aria-label') ?? '')))
+      } catch {
+        return
+      }
+      for (const nav of navs) {
+        for (const button of nav.querySelectorAll('button[data-index]')) {
+          const label = String(button.getAttribute('aria-label') ?? '')
+          const number = label.match(/(\d+)(?!.*\d)/)
+          if (number === null) continue
+          const turn = Number(number[1])
+          const hide = foldedAway.has(turn) && !visible.has(turn)
+          if (hide) {
+            if (!railHidden.has(button)) {
+              railHidden.set(button, button.style.visibility)
+              button.style.visibility = 'hidden'
+            }
+          } else if (railHidden.has(button)) {
+            button.style.visibility = railHidden.get(button)
+            railHidden.delete(button)
+          }
+        }
+      }
+    }
+
+    /** Restore every rail mark this card hid. */
+    function restoreTurnRail() {
+      for (const [button, visibility] of railHidden) {
+        try {
+          button.style.visibility = visibility
+        } catch {
+          // A virtualized mark may already be gone.
+        }
+      }
+      railHidden.clear()
     }
 
     const S = {
@@ -476,16 +558,20 @@ window.__ModuleLoader__.load({
             if (parent.firstElementChild !== row) {
               parent.insertBefore(row, parent.firstElementChild)
             }
+            filterTurnRail()
           }
           apply()
           const observer = new MutationObserver(apply)
           observer.observe(parent, { childList: true, subtree: true })
+          const railTimer = setInterval(filterTurnRail, 700)
           return () => {
             observer.disconnect()
+            clearInterval(railTimer)
             restoreFolded()
+            restoreTurnRail()
             if (originalNext !== null && originalNext.parentElement === parent) {
               parent.insertBefore(row, originalNext)
-            } else if (row.parentElement !== parent) {
+            } else if (originalNext === null || row.parentElement !== parent) {
               parent.appendChild(row)
             }
             row.style.order = originalOrder
@@ -1116,51 +1202,32 @@ window.__ModuleLoader__.load({
       }
 
       const phase = String(job?.phase ?? '')
-      let badge = null
-      if (job === null || phase === 'skipped') {
-        const summary = last ?? live
-        if (summary !== null) {
-          const tokens = Number(summary.checkpointTokens ?? summary.summaryTokens) || 0
-          badge = h('span', { style: SS.status, 'data-memtree-status': 'summary' },
-            `记忆树摘要 ${shortTokens(tokens)} token`)
-        }
-      } else if (phase === 'queued' || phase === 'summarizing' || phase === 'merging') {
-        badge = h('span', { style: SS.status, 'data-memtree-status': phase },
-          `记忆树压缩中 · ${String(job.progress ?? '准备分片')}`)
-      } else if (phase === 'waiting-idle' || phase === 'committing') {
-        badge = h('span', { style: SS.status, 'data-memtree-status': phase },
-          `记忆树 · ${phase === 'committing' ? '写入记忆卡片' : String(job.progress ?? '等待空闲提交')}`)
-      } else if (phase === 'done') {
-        badge = h('span', { style: SS.status, 'data-memtree-status': 'done' },
-          `记忆树 · 压缩完成，释放约 ${shortTokens(job.shadowed)} token`)
-      } else if (phase === 'failed') {
-        badge = h('span', {
-          style: { ...SS.status, color: 'var(--dsw-alias-state-error-primary, #b91c1c)' },
-          'data-memtree-status': 'failed',
-        }, `记忆树 · 压缩失败${job.error ? `：${String(job.error)}` : ''}`)
+      if (phase === 'queued' || phase === 'summarizing' || phase === 'merging'
+        || phase === 'waiting-idle' || phase === 'committing') {
+        const detail = phase === 'committing'
+          ? '写入记忆卡片'
+          : String(job.progress ?? (phase === 'waiting-idle' ? '等待空闲提交' : '准备分片'))
+        return h('div', {
+          style: SS.status,
+          'data-memtree-status': phase,
+        }, `记忆树压缩中 · ${detail}`)
       }
-      if (!enabled && badge === null) {
-        badge = h('span', { style: SS.status }, '已关闭，使用普通压缩')
-      }
-      return h('div', {
-        style: { display: 'inline-flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+      let label = enabled ? '本会话使用记忆树' : '本会话已关闭'
+      if (!enabled) label += ' · 普通压缩'
+      if (phase === 'failed') label += ' · 压缩失败'
+      return h('label', {
+        style: { ...SS.status, cursor: busy ? 'progress' : 'pointer' },
+        title: '只影响当前会话；下一次压缩生效',
       }, [
-        h('label', {
-          key: 'switch',
-          style: { ...SS.status, cursor: busy ? 'progress' : 'pointer' },
-          title: '只影响当前会话；下一次压缩生效',
-        }, [
-          h('input', {
-            key: 'input',
-            type: 'checkbox',
-            checked: enabled,
-            disabled: busy,
-            onChange: toggle,
-            style: { margin: 0 },
-          }),
-          h('span', { key: 'text' }, enabled ? '本会话使用记忆树' : '本会话已关闭'),
-        ]),
-        badge,
+        h('input', {
+          key: 'input',
+          type: 'checkbox',
+          checked: enabled,
+          disabled: busy,
+          onChange: toggle,
+          style: { margin: 0 },
+        }),
+        h('span', { key: 'text' }, label),
       ])
     }
 
