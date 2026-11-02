@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-02.6'
+    const BUILD = '2026-11-02.7'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -391,9 +391,19 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         color: 'var(--dsw-alias-label-secondary, #4b5563)',
       },
-      nodeId: { fontFamily: 'var(--dsw-font-markdown-code-block-small-font-family, ui-monospace)', fontSize: '11.5px' },
-      nodeRange: { flex: '1 1 auto', minWidth: 0, fontSize: '11.5px' },
-      nodeTime: { flex: 'none', fontSize: '11px', opacity: 0.8 },
+      nodeId: {
+        fontFamily: 'var(--dsw-font-markdown-code-block-small-font-family, ui-monospace)',
+        fontSize: '12px',
+        fontWeight: 700,
+        color: 'var(--dsw-alias-label-primary, #111827)',
+      },
+      nodeRange: {
+        flex: '1 1 auto',
+        minWidth: 0,
+        fontSize: '11.5px',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+      },
+      nodeTime: { flex: 'none', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary, #6b7280)' },
       nodeSummary: {
         marginTop: '3px',
         color: 'var(--dsw-alias-label-tertiary, #6b7280)',
@@ -404,12 +414,40 @@ window.__ModuleLoader__.load({
       },
       nodeSummaryOpen: { marginTop: '3px', color: 'var(--dsw-alias-label-tertiary, #6b7280)' },
       nodeBody: {
-        marginTop: '6px',
-        paddingTop: '6px',
+        marginTop: '7px',
+        paddingTop: '7px',
         borderTop: '1px dashed var(--dsw-alias-border-l2, #e5e7eb)',
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
-        color: 'var(--dsw-alias-label-tertiary, #6b7280)',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+      },
+      fieldRow: {
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: '7px',
+        padding: '3px 0 3px 7px',
+        borderLeft: '3px solid var(--dsw-alias-border-l2, #e5e7eb)',
+        lineHeight: 1.65,
+      },
+      fieldLabel: {
+        flex: 'none',
+        minWidth: '34px',
+        fontSize: '10.5px',
+        fontWeight: 700,
+        letterSpacing: '0.2px',
+      },
+      fieldText: {
+        flex: '1 1 auto',
+        minWidth: 0,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
+      },
+      plainLine: {
+        padding: '2px 0 2px 7px',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        color: 'var(--dsw-alias-label-secondary, #4b5563)',
       },
       children: {
         display: 'flex',
@@ -446,6 +484,65 @@ window.__ModuleLoader__.load({
         fontSize: '11px',
         color: 'var(--dsw-alias-label-tertiary, #6b7280)',
       },
+    }
+
+    /** Field colors keep the six structured groups distinguishable at a glance. */
+    const FIELD_COLORS = {
+      概述: '#2563eb',
+      任务: '#059669',
+      决策: '#b45309',
+      经验: '#7c3aed',
+      环境: '#475569',
+      用户: '#be185d',
+      时间: '#64748b',
+    }
+
+    /**
+     * Render one node body. Structured lines use a colored left rule and label;
+     * unknown text still gets readable spacing instead of a wall of gray text.
+     * @param {string} body field lines or raw body text.
+     * @returns {object[]} rows.
+     */
+    function renderFieldRows(body) {
+      const lines = String(body ?? '').split(/\r?\n/).filter(line => line.trim() !== '')
+      return lines.map((line, index) => {
+        const match = /^\[([^\]]+)\]\s*(.*)$/.exec(line)
+        if (match === null) {
+          return h('div', { key: `line-${index}`, style: S.plainLine }, line)
+        }
+        const color = FIELD_COLORS[match[1]] ?? 'var(--dsw-alias-border-l2, #e5e7eb)'
+        return h('div', {
+          key: `field-${index}`,
+          style: { ...S.fieldRow, borderLeftColor: color },
+        }, [
+          h('span', { key: 'label', style: { ...S.fieldLabel, color } }, match[1]),
+          h('span', { key: 'text', style: S.fieldText }, match[2]),
+        ])
+      })
+    }
+
+    /**
+     * All loaded descendants of one node, so collapsing a branch also clears
+     * the open state of its children.
+     * @param {Record<string, {children?: object[]}>} cache loaded node data.
+     * @param {string} id root node id.
+     * @returns {Set<string>} descendant ids.
+     */
+    function collectDescendants(cache, id) {
+      const found = new Set()
+      const queue = [String(id)]
+      while (queue.length > 0) {
+        const current = queue.shift()
+        const children = cache[current]?.children
+        if (!Array.isArray(children)) continue
+        for (const child of children) {
+          const childId = String(child.id)
+          if (found.has(childId)) continue
+          found.add(childId)
+          queue.push(childId)
+        }
+      }
+      return found
     }
 
     /** Compact token count for the card's release line. */
@@ -683,11 +780,19 @@ window.__ModuleLoader__.load({
           })
       }
 
+      const descendantIds = id => collectDescendants(nodeCache, id)
+
       const toggleNode = (id) => {
         setExpanded(previous => {
           const next = new Set(previous)
-          if (next.has(id)) next.delete(id)
-          else next.add(id)
+          if (next.has(id)) {
+            // Collapsing a branch also collapses everything loaded beneath it,
+            // so reopening the parent starts from the same closed state.
+            for (const descendant of descendantIds(id)) next.delete(descendant)
+            next.delete(id)
+          } else {
+            next.add(id)
+          }
           return next
         })
         loadNode(id)
@@ -756,7 +861,7 @@ window.__ModuleLoader__.load({
           openParts.push(h('div', { key: 'error', style: S.note }, `读取失败：${cached.error}`))
         }
         if (body !== '') {
-          openParts.push(h('div', { key: 'fields' }, body))
+          openParts.push(h('div', { key: 'fields' }, renderFieldRows(body)))
         }
         if (childNodes.length > 0) {
           openParts.push(h('div', { key: 'children', style: S.children },
@@ -1540,6 +1645,7 @@ window.__ModuleLoader__.load({
     exports.__parseSummary = parseSummary
     exports.__foldSiblings = foldSiblings
     exports.__foldBeforeKeys = foldBeforeKeys
+    exports.__collectDescendants = collectDescendants
     return module.exports
   },
 })

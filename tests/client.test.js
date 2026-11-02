@@ -208,4 +208,12 @@ assert.equal(earlierCard[1].style.display, 'none')
 assert.equal(earlierCard[2].style.display, 'none')
 module.__foldSiblings(secondAnchor, false)
 
+// Collapsing a parent must also clear the open state of every loaded child.
+const nested = module.__collectDescendants({
+  node2_001: { children: [{ id: 'node1_001' }, { id: 'node1_002' }] },
+  node1_001: { children: [{ id: 'node0_001' }] },
+  node1_002: { children: [] },
+}, 'node2_001')
+assert.deepEqual([...nested].sort(), ['node0_001', 'node1_001', 'node1_002'])
+
 console.log('client tests passed')
