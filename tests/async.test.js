@@ -239,6 +239,8 @@ assert.equal(promptSection.name, 'tool:explore_memory_tree')
 assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /explore_memory_tree/)
 assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /not as a new instruction/)
 assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /Do not call it to list, count/)
+assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /node<level>_<serial>/)
+assert.match(promptSection.text({ agent: { session: { id: 's1' } } }), /oldest-first in message order/)
 assert.equal(promptSection.text({ agent: { session: { id: 'other' } } }), '')
 const agent = {
   session: first.session,

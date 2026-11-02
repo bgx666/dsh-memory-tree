@@ -206,8 +206,9 @@ export function renderNodeBlocks({ roots, stats, summaryOnly = false }) {
   const blocks = [
     `${DIGEST_MARK} 共 ${stats.active} 个活跃节点，深度 L${Math.max(0, stats.depth)}，`
     + `已折叠到第 ${stats.covered} 条。下面每段是一个节点，编号、范围、时间和摘要都已经在这里；`
-    + '摘要和字段够用就直接回答，不必再查。只有需要子节点或叶子原文时，才调用 '
-    + 'explore_memory_tree(node_id)，一次传一个 node_id，不必翻到最底层。\n',
+    + '编号 node<层级>_<该层序号> 的序号只用于定位，不代表时间先后；找时间段请看「第a-b条」和「[时间]」。'
+    + '根节点按消息范围从旧到新排列。摘要和字段够用就直接回答，不必再查；只有需要子节点或叶子原文时，'
+    + '才调用 explore_memory_tree(node_id)，一次传一个 node_id，不必翻到最底层。\n',
   ]
   if (roots.length === 0) blocks.push('（本会话还没有可折叠的历史。）\n')
   else for (const row of roots) blocks.push(`${nodeText(row, { summaryOnly })}\n`)
