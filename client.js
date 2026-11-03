@@ -35,7 +35,7 @@ window.__ModuleLoader__.load({
      * bytes immutably, so a stale page is indistinguishable from a broken one —
      * unless the build says which one it is. Keep this in the first console line.
      */
-    const BUILD = '2026-11-03.2'
+    const BUILD = '2026-11-03.3'
 
     // ── the checkpoint text → nodes ────────────────────────────────────────
 
@@ -690,6 +690,7 @@ window.__ModuleLoader__.load({
       const loading = react.useRef(new Set())
       const [keepKeys, setKeepKeys] = react.useState(null)
       const [keepRevision, setKeepRevision] = react.useState(0)
+      const [layoutRevision, setLayoutRevision] = react.useState(0)
       const root = react.useRef(null)
 
       // The card node carries the checkpoint seq but not the retained rows.
@@ -741,13 +742,39 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('memtree-session-changed', onSessionSwitch)
       }, [isLatest, sessionId])
 
+      // A laptop wake can restore the page after the Host was asleep; the first
+      // keep-set request may have failed or been aborted. Re-read it when the
+      // page becomes visible again so folding resumes without a manual refresh.
+      react.useEffect(() => {
+        if (!isLatest) return undefined
+        const refresh = () => {
+          setKeepRevision(value => value + 1)
+          // Re-run the DOM effect even when the keep request still returns null;
+          // a restored page must move the checkpoint back to the top by itself.
+          setLayoutRevision(value => value + 1)
+        }
+        const onVisibility = () => {
+          if (typeof document !== 'undefined' && document.visibilityState === 'visible') refresh()
+        }
+        window.addEventListener('pageshow', refresh)
+        if (typeof document !== 'undefined') {
+          document.addEventListener('visibilitychange', onVisibility)
+        }
+        return () => {
+          window.removeEventListener('pageshow', refresh)
+          if (typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', onVisibility)
+          }
+        }
+      }, [isLatest])
+
       // Folding lives in an effect because it touches siblings React does not
       // own. Re-running on every child mutation keeps it correct when the
       // transcript appends a turn while the card stays mounted. The fold is
       // permanent: the card is the start of the visible conversation, and there
       // is no "expand original" affordance.
       react.useEffect(() => {
-        if (!isLatest || !Array.isArray(keepKeys)) return undefined
+        if (!isLatest) return undefined
         const self = root.current
         if (self === null) return undefined
         console.info(`[memtree] card rendered (${parsed.nodes.length} node(s))`,
@@ -781,16 +808,21 @@ window.__ModuleLoader__.load({
                 // A virtualized transcript can detach between checks.
               }
               const context = contextTurnCutoff(row, rows)
-              filterTurnRail(context ?? {
+              filterTurnRail(context ?? (Array.isArray(keepKeys) ? {
                 cutoffTurn: retainedTurnCutoff(keepKeys, rows),
                 hideAll: keepKeys.length === 0,
-              })
+              } : {}))
             }, 80)
           }
           const apply = () => {
             if (disposed) return
-            if (keepKeys.length === 0) foldSiblings(self, true)
-            else foldBeforeKeys(self, keepKeys)
+            // Position is independent of the keep set: a failed or delayed
+            // status request after wake must not leave the checkpoint at the
+            // bottom of the transcript. Folding still waits for the real keys.
+            if (Array.isArray(keepKeys)) {
+              if (keepKeys.length === 0) foldSiblings(self, true)
+              else foldBeforeKeys(self, keepKeys)
+            }
             if (parent.firstElementChild !== row) {
               parent.insertBefore(row, parent.firstElementChild)
             }
@@ -837,7 +869,7 @@ window.__ModuleLoader__.load({
           console.warn('[memtree] could not fold the shadowed transcript:', error)
           return undefined
         }
-      }, [isLatest, keepKeys])
+      }, [isLatest, keepKeys, layoutRevision])
 
       if (!isLatest) return null
 
