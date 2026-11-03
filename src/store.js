@@ -501,6 +501,45 @@ export class MemoryTreeStore {
       .run(sessionId, enabled ? 1 : 0)
   }
 
+  /**
+   * Move one session's whole memory tree to another session id.
+   *
+   * Used by Planner's consciousness transfer: the old body has been seeded into
+   * the new Session, so the message ranges still line up. The old session loses
+   * its tree; the new one becomes the single active owner. Refuses to overwrite
+   * a target that already has nodes.
+   * @param {string} sourceId old session.
+   * @param {string} targetId new session.
+   * @returns {{nodes: number, keeps: number, enabled: boolean}} moved counts.
+   */
+  moveSession(sourceId, targetId) {
+    if (sourceId === targetId) throw new Error('source and target sessions are identical')
+    const db = this.#open()
+    return transaction(db, () => {
+      const targetCount = Number(db.prepare(
+        'SELECT COUNT(*) AS n FROM nodes WHERE session_id = ?',
+      ).get(targetId)?.['n'] ?? 0)
+      if (targetCount > 0) throw new Error('target session already has a memory tree')
+      const sourceNodes = Number(db.prepare(
+        'SELECT COUNT(*) AS n FROM nodes WHERE session_id = ?',
+      ).get(sourceId)?.['n'] ?? 0)
+      const sourceKeeps = Number(db.prepare(
+        'SELECT COUNT(*) AS n FROM keeps WHERE session_id = ?',
+      ).get(sourceId)?.['n'] ?? 0)
+      const enabled = this.sessionEnabled(sourceId)
+      db.prepare('UPDATE nodes SET session_id = ? WHERE session_id = ?').run(targetId, sourceId)
+      db.prepare('UPDATE keeps SET session_id = ? WHERE session_id = ?').run(targetId, sourceId)
+      db.prepare('UPDATE runs SET session_id = ? WHERE session_id = ?').run(targetId, sourceId)
+      db.prepare('DELETE FROM session_prefs WHERE session_id = ?').run(targetId)
+      db.prepare(`INSERT INTO session_prefs (session_id, enabled, updated_at)
+                  VALUES (?, ?, unixepoch())`).run(targetId, enabled ? 1 : 0)
+      db.prepare('DELETE FROM session_prefs WHERE session_id = ?').run(sourceId)
+      this.#counters.delete(sourceId)
+      this.#counters.delete(targetId)
+      return { nodes: sourceNodes, keeps: sourceKeeps, enabled }
+    })
+  }
+
   /** Tree statistics for one session. */
   stats(sessionId) {
     const row = this.#open()

@@ -293,6 +293,32 @@ await test('explore_memory_tree requires a node id and replays a leaf original',
   store.close()
 })
 
+await test('a session tree can move to a new body for Planner transfer', async () => {
+  const store = new MemoryTreeStore(dbPath)
+  const source = 's-move-old'
+  const target = 's-move-new'
+  await compactIntoTree({
+    store,
+    limits: { chunkTokens: 30000, maxChunks: 12, nodeBudget: 1000, mergeThreshold: 8, branch: 4, maxMerges: 8 },
+    input: { messages: freshMessages(1) },
+    agent: { session: { id: source } },
+    complete: stubComplete('移动前的记忆'),
+    sessionId: source,
+  })
+  store.setSessionEnabled(source, true)
+  store.setKeep(source, 123, ['13:input-messageold'])
+  const moved = store.moveSession(source, target)
+  assert.equal(moved.nodes, 1)
+  assert.equal(moved.keeps, 1)
+  assert.equal(moved.enabled, true)
+  assert.equal(store.stats(source).total, 0)
+  assert.equal(store.stats(target).total, 1)
+  assert.equal(store.sessionEnabled(target), true)
+  assert.deepEqual(store.getKeep(target, 123), ['13:input-messageold'])
+  assert.equal(store.getKeep(source, 123), null)
+  store.close()
+})
+
 rmSync(dir, { recursive: true, force: true })
 if (failures > 0) {
   console.error(`\n${failures} failure(s)`)

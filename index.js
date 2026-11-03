@@ -702,6 +702,8 @@ export default class MemoryTreeCompaction {
           (req, res) => (active ?? this)._serveSession(req, res))
         const offNode = register('/memory-tree/api/node',
           (req, res) => (active ?? this)._serveNode(req, res))
+        const offMove = register('/memory-tree/api/move',
+          (req, res) => (active ?? this)._serveMove(req, res))
         const owner = Symbol('memory-tree-routes')
         globalThis[ROUTE_CLEANUP] = {
           owner,
@@ -709,6 +711,7 @@ export default class MemoryTreeCompaction {
             offStatus?.()
             offSession?.()
             offNode?.()
+            offMove?.()
           },
         }
         ctx.effect(() => () => {
@@ -721,7 +724,8 @@ export default class MemoryTreeCompaction {
           }
         }, 'memtree: routes')
         record('status-route',
-          'path=/memory-tree/api/status,/memory-tree/api/session,/memory-tree/api/node')
+          'path=/memory-tree/api/status,/memory-tree/api/session,/memory-tree/api/node,'
+          + '/memory-tree/api/move')
         return true
       } catch (error) {
         record('routefail', `error=${reasonText(error).slice(0, 200)}`)
@@ -1067,6 +1071,45 @@ export default class MemoryTreeCompaction {
         res.end(JSON.stringify({ session, enabled: data.enabled }))
       } catch (error) {
         fail(400, `invalid request: ${reasonText(error).slice(0, 120)}`)
+      }
+    })
+  }
+
+  /**
+   * Move one session's memory tree to a new body after a Planner transfer.
+   * The old session has already been archived by the caller; this route owns
+   * the SQL move and refuses to overwrite an existing target tree.
+   * @param {import('node:http').IncomingMessage} req request.
+   * @param {import('node:http').ServerResponse} res response.
+   * @returns {void}
+   */
+  _serveMove(req, res) {
+    const fail = (status, text) => {
+      res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: text }))
+    }
+    if (req.method !== 'POST') return fail(405, 'method not allowed')
+    let raw = ''
+    req.setEncoding?.('utf8')
+    req.on('data', (chunk) => {
+      raw += chunk
+      if (raw.length > 16_384) req.destroy()
+    })
+    req.on('end', () => {
+      try {
+        const data = JSON.parse(raw === '' ? '{}' : raw)
+        const source = typeof data.source === 'string' ? data.source : ''
+        const target = typeof data.target === 'string' ? data.target : ''
+        if (source === '' || target === '') return fail(400, 'source and target are required')
+        const moved = this._tree().moveSession(source, target)
+        record('session-move', `source=${source}\ttarget=${target}\tnodes=${moved.nodes}`)
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        res.end(JSON.stringify({ source, target, ...moved }))
+      } catch (error) {
+        fail(400, `move failed: ${reasonText(error).slice(0, 200)}`)
       }
     })
   }
